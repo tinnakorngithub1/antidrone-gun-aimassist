@@ -14,6 +14,7 @@
 | `33_lock_sim_closedloop.py` | sim harness รันโค้ด LOCK จริง (`--selftest / --firetest / --campaign`) |
 | `fast_motion_sky.py` / `camera_startup.py` | กล้อง/สตรีม RTSP |
 | `arm_cue_receiver.py` / `effector_ws_exporter.py` | รับ cue จาก cam8 (UDP) + telemetry → C2 |
+| `ARM_CUE_PROTOCOL.md` | **สัญญา interface cam8→แขน** (tier: confirmed/possible) — ทีม cam8 เริ่มอ่านที่นี่ |
 | `REVIEW_ANTIDRONE_LOCK_MODE.md` | เอกสารรีวิว + ผลวิจัย (tracking/firing envelope) |
 
 ## โมเดล (TensorRT engine)

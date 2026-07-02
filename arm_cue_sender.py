@@ -14,7 +14,12 @@ Record fields (ทุก field เสมอ):
   bbox_w, bbox_h : int|null — ขนาด bounding box บน frame detection (พิกเซล); null ถ้าไม่มีข้อมูล
   bbox_w_norm, bbox_h_norm: float|null — bbox_w/frame_w, bbox_h/frame_h (0–1); null ถ้า bbox ไม่มี
   distance_m     : float|null
+  tier           : str    — "confirmed" (ยืนยันเป็นโดรน) หรือ "possible" (มีความเป็นไปได้)
+  confidence     : float|null — YOLO confidence (0–1); null ถ้ายืนยันด้วย kinematics ล้วน
   target_id, source_camera, timestamp, sequence, cue_ttl_ms
+
+ลำดับใน list: confirmed มาก่อน possible, ภายใน tier เรียง confidence มาก→น้อย
+(ฝั่ง receiver ที่ใช้ element แรกจะได้เป้า confirmed ที่ดีที่สุดเสมอ)
 """
 
 import json
@@ -87,10 +92,14 @@ class ArmCueSender:
         frame_h: int,
     ) -> None:
         """
-        candidates: list of tuples จาก _ws_confirmed_candidates
+        candidates: list of tuples จาก _ws_confirmed_candidates / _arm_cue_candidates
           - 4-tuple: (cx, cy, obj_id, distance_m)                       — backward compat
           - 6-tuple: (cx, cy, obj_id, distance_m, bbox_w, bbox_h)       — ส่งขนาดกล่องด้วย
+          - 8-tuple: (..., bbox_w, bbox_h, tier, confidence)            — ระบุระดับความมั่นใจ
+            tier: "confirmed" | "possible" (ไม่ระบุ = "confirmed")
+            confidence: float 0–1 | None (ไม่มีค่า YOLO conf เช่น kinematic-only)
         บันทึก payload ล่าสุดไว้; background thread จะส่งออกตาม rate limit.
+        ลำดับส่ง: confirmed ก่อน possible, ภายใน tier เรียง confidence มาก→น้อย
         """
         if not self.enabled or not candidates:
             return
@@ -105,6 +114,12 @@ class ArmCueSender:
                 cx, cy, obj_id, dist_m = entry[0], entry[1], entry[2], entry[3]
                 bw = int(entry[4]) if len(entry) > 4 and entry[4] is not None else None
                 bh = int(entry[5]) if len(entry) > 5 and entry[5] is not None else None
+                tier = str(entry[6]) if len(entry) > 6 and entry[6] else "confirmed"
+                conf = (
+                    float(entry[7])
+                    if len(entry) > 7 and entry[7] is not None
+                    else None
+                )
                 bw_norm = float(bw) / fw if (bw is not None and fw > 0) else None
                 bh_norm = float(bh) / fh if (bh is not None and fh > 0) else None
                 payloads.append(
@@ -120,11 +135,19 @@ class ArmCueSender:
                         "bbox_w_norm": bw_norm,
                         "bbox_h_norm": bh_norm,
                         "distance_m": float(dist_m) if dist_m is not None else None,
+                        "tier": tier,
+                        "confidence": conf,
                         "timestamp": now,
                         "sequence": seq,
                         "cue_ttl_ms": self.cue_ttl_ms,
                     }
                 )
+            payloads.sort(
+                key=lambda p: (
+                    0 if p["tier"] == "confirmed" else 1,
+                    -(p["confidence"] or 0.0),
+                )
+            )
             self._pending = payloads
 
     def set_enabled(self, enabled: bool) -> None:

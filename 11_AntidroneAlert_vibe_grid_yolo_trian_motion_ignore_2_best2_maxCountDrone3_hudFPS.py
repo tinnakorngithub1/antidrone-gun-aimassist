@@ -47,6 +47,12 @@ YOLO_MODEL_FILE_1280 = "yolo_11n_day_night_200_2_imgsz1280.engine"
 YOLO_INPUT_SIZE = 640  # ต้องตรงกับขนาดของ engine ที่ใช้
 LOCAL_YOLO_CONF_THRESHOLD = 0.01
 LOCAL_YOLO_DRONE_CONF_THRESHOLD = 0.5
+# --- Arm cue confidence tier (ดู ARM_CUE_PROTOCOL.md) ---
+# possible tier: เป้าที่ "มีความเป็นไปได้" แต่ยังไม่ถึงเกณฑ์ confirmed —
+# ส่งให้ Jetson แขนชี้รอ human ตัดสินใจกด LOCK (ไม่เข้า alert/websocket)
+LOCAL_YOLO_DRONE_POSSIBLE_CONF_THRESHOLD = 0.30  # YOLO conf >= นี้ (แต่ < เกณฑ์หลัก) → possible
+ARM_CUE_POSSIBLE_PATH_MIN_CONF = 0.30            # validated path ต้องเคยมี YOLO conf >= นี้
+ARM_CUE_MAX_CANDIDATES = 8                       # จำกัดจำนวน cue ต่อ datagram
 YOLO_BBOX_MERGE_IOU = 0.5
 YOLO_INTERVAL = 5  # ทำ YOLO ทุก 5 เฟรม
 WIDE_SPLIT_ENABLED = True
@@ -4302,6 +4308,9 @@ def main(camera_override=None, active_camera_name=None):
                 #   bbox_w/bbox_h = ขนาด bounding box บน frame detection จริง (สอดคล้อง w, h)
                 # สำหรับ build drone records ส่ง websocket + arm cue หลังลูปเสร็จ
                 _ws_confirmed_candidates = []
+                # arm cue candidates (แยกจาก WS): 8-tuple มี tier + confidence
+                # (cx, cy, obj_id, dist_m, bbox_w, bbox_h, tier, conf)
+                _arm_cue_candidates = []
 
                 red_obj_ids_this_frame = set()
                 for obj_id, (rect, is_real) in tracked_objs.items():
@@ -4314,6 +4323,24 @@ def main(camera_override=None, active_camera_name=None):
 
                     path_data = graph_manager.paths[obj_id]
                     is_red = path_data.get('kinematic_confirmed', False) or path_data.get('yolo_state') == 'red'
+
+                    if not is_red:
+                        # possible tier: validated path ที่ยังไม่ confirmed แต่เคยมี
+                        # YOLO conf พอสมควร (หรือ state orange) → arm cue เท่านั้น
+                        _p_conf = float(path_data.get('max_yolo_conf', 0.0) or 0.0)
+                        if (_p_conf >= ARM_CUE_POSSIBLE_PATH_MIN_CONF
+                                or path_data.get('yolo_state') == 'orange'):
+                            _px, _py, _pw, _ph = rect[0], rect[1], rect[2], rect[3]
+                            _pcx = _px + _pw // 2
+                            _pcy = _py + _ph // 2
+                            _ppts = path_data.get("smoothed_points") or path_data.get("points") or []
+                            if _ppts:
+                                _pcx = float(_ppts[-1][0])
+                                _pcy = float(_ppts[-1][1])
+                            _arm_cue_candidates.append((
+                                _pcx, _pcy, obj_id, path_data.get('distance_m', None),
+                                int(_pw), int(_ph), "possible", _p_conf or None,
+                            ))
 
                     if is_red:
                         has_red_drone_visual = True
@@ -4344,6 +4371,11 @@ def main(camera_override=None, active_camera_name=None):
                             except Exception:
                                 _ws_dist = None
                         _ws_confirmed_candidates.append((cur_cx, cur_cy, obj_id, _ws_dist, int(w_box), int(h_box)))
+                        _arm_cue_candidates.append((
+                            cur_cx, cur_cy, obj_id, _ws_dist,
+                            int(w_box), int(h_box), "confirmed",
+                            float(path_data.get('max_yolo_conf', 0.0) or 0.0) or None,
+                        ))
                         # Session: นับเมื่อ path แดงต่อเนื่องครบ SESSION_PATH_RED_STABLE_FRAMES เฟรม และไม่ใช่ reappeared
                         if (obj_id not in confirmed_drone_ids_this_session
                                 and red_consecutive_frames[obj_id] >= SESSION_PATH_RED_STABLE_FRAMES):
@@ -4421,7 +4453,7 @@ def main(camera_override=None, active_camera_name=None):
                 if last_yolo_full_dets:
                     _yolo_ws_sort_id = 10_000_000
                     for yolo_x, yolo_y, yolo_w, yolo_h, yolo_conf in last_yolo_full_dets:
-                        if yolo_conf < LOCAL_YOLO_DRONE_CONF_THRESHOLD:
+                        if yolo_conf < LOCAL_YOLO_DRONE_POSSIBLE_CONF_THRESHOLD:
                             continue
                         skip = False
                         _min_side_ct = min(w, h)
@@ -4445,6 +4477,16 @@ def main(camera_override=None, active_camera_name=None):
 
                         yolo_cx = yolo_x + yolo_w // 2
                         yolo_cy = yolo_y + yolo_h // 2
+
+                        if yolo_conf < LOCAL_YOLO_DRONE_CONF_THRESHOLD:
+                            # possible tier: conf ต่ำกว่าเกณฑ์ confirmed —
+                            # ส่งเป็น arm cue เท่านั้น ไม่นับ red/alert/session/WS
+                            _arm_cue_candidates.append((
+                                yolo_cx, yolo_cy, _yolo_ws_sort_id, None,
+                                int(yolo_w), int(yolo_h), "possible", float(yolo_conf),
+                            ))
+                            _yolo_ws_sort_id += 1
+                            continue
 
                         has_red_drone_visual = True
                         red_drone_count += 1
@@ -4476,6 +4518,10 @@ def main(camera_override=None, active_camera_name=None):
                         else:
                             _yolo_sm = _prev_e
                         _ws_confirmed_candidates.append((yolo_cx, yolo_cy, _yolo_ws_sort_id, _yolo_sm, int(yolo_w), int(yolo_h)))
+                        _arm_cue_candidates.append((
+                            yolo_cx, yolo_cy, _yolo_ws_sort_id, _yolo_sm,
+                            int(yolo_w), int(yolo_h), "confirmed", float(yolo_conf),
+                        ))
                         _yolo_ws_sort_id += 1
                         # Session YOLO-only: นับเมื่อเจอในบริเวณนั้นอย่างน้อย SESSION_YOLO_ONLY_MIN_HITS ครั้งภายในหน้าต่างเวลา
                         now_t = time.time()
@@ -4674,9 +4720,15 @@ def main(camera_override=None, active_camera_name=None):
                 DRONE_HUD_COUNTS["drone_records"] = _ws_records
                 ws_exporter.push(_ws_records)
 
-                # Arm cue: ส่ง confirmed candidates ไปยัง Jetson แขน (criteria: kinematic_confirmed OR yolo_state=='red')
-                if cue_sender is not None and _ws_confirmed_candidates:
-                    cue_sender.push(_ws_confirmed_candidates, w, h)
+                # Arm cue: ส่ง candidates (confirmed + possible) ไปยัง Jetson แขน
+                #   confirmed: kinematic_confirmed OR yolo_state=='red' OR YOLO conf >= เกณฑ์หลัก
+                #   possible : validated path / YOLO conf ต่ำกว่าเกณฑ์ — AUTO ชี้รอ human กด LOCK
+                # เรียง confirmed ก่อนแล้วตัดที่ ARM_CUE_MAX_CANDIDATES (กัน datagram บวม)
+                if cue_sender is not None and _arm_cue_candidates:
+                    _arm_cue_candidates.sort(
+                        key=lambda t: (0 if t[6] == "confirmed" else 1, -(t[7] or 0.0))
+                    )
+                    cue_sender.push(_arm_cue_candidates[:ARM_CUE_MAX_CANDIDATES], w, h)
 
                 # HUD: show arm cue sender status at bottom-right (avoid overlap)
                 if cue_sender is not None:
