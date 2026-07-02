@@ -15,14 +15,9 @@ Cue record fields (ที่อาจมีใน dict):
   bbox_w, bbox_h    : int|null   — ขนาด bbox บน frame detection (พิกเซล); None ถ้าไม่มี
   bbox_w_norm, bbox_h_norm : float|null — bbox_w/frame_w, bbox_h/frame_h (0–1); None ถ้าไม่มี
   distance_m        : float|null
-  tier              : str    — "confirmed" | "possible"; ไม่มี field = "confirmed" (backward compat)
-  confidence        : float|null — YOLO confidence (0–1); null = ยืนยันด้วย kinematics
   source_camera, target_id, timestamp, sequence, cue_ttl_ms
   target_lat, target_lng : float|null — optional (Phase 2, จาก Jetson #1)
   recv_timestamp    : float  — stamped local clock เมื่อรับ (ใช้คำนวณ TTL)
-
-การเลือก primary target จาก list: เลือก confirmed ก่อน possible,
-ภายใน tier เดียวกันเลือก confidence สูงสุด (ไม่พึ่งลำดับจากผู้ส่ง).
 """
 
 import json
@@ -33,13 +28,6 @@ from typing import Any, Dict, Optional
 
 DEFAULT_PORT = 5765
 DEFAULT_CUE_TTL_MS = 500
-
-
-def _cue_rank(cue: Dict[str, Any]) -> tuple:
-    """sort key เลือก primary cue: confirmed ก่อน possible, confidence มาก่อน."""
-    tier = str(cue.get("tier", "confirmed")).lower()
-    conf = cue.get("confidence")
-    return (0 if tier == "confirmed" else 1, -(conf if conf is not None else 0.0))
 
 
 class ArmCueReceiver:
@@ -129,9 +117,7 @@ class ArmCueReceiver:
         raw_age = self.get_cue_age_ms() or 0.0
         if raw_age > ttl_ms:
             return f"RCV:stale {raw_age:.0f}ms"
-        _tier = str((cue or {}).get("tier", "confirmed")).lower()
-        _tag = "" if _tier == "confirmed" else f" [{_tier.upper()}]"
-        return f"RCV:{raw_age:.0f}ms{_tag}"
+        return f"RCV:{raw_age:.0f}ms"
 
     # ------------------------------------------------------------------
     # Background thread — ห้ามแตะ arm/serial ที่นี่
@@ -147,11 +133,7 @@ class ArmCueReceiver:
                 parsed = json.loads(data.decode("utf-8"))
                 # parsed อาจเป็น list (หลาย candidates) หรือ dict (single)
                 if isinstance(parsed, list) and parsed:
-                    _dicts = [c for c in parsed if isinstance(c, dict)]
-                    if not _dicts:
-                        continue
-                    # primary target: confirmed ก่อน possible, แล้ว confidence สูงสุด
-                    cue = min(_dicts, key=_cue_rank)
+                    cue = parsed[0]  # primary target (ตัวแรก)
                 elif isinstance(parsed, dict):
                     cue = parsed
                 else:

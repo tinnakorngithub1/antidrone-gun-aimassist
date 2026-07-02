@@ -216,13 +216,6 @@ _ACTIVE_CAMERA_NAME = None
 # --- Arm cue receiver (cam8 → arm AUTO) ---
 ARM_CUE_RECEIVER_PORT = 5765
 ARM_CUE_TTL_MS = 500  # ต้องไม่เกิน cue_ttl_ms ที่ฝั่ง 11 ส่งมา
-# AUTO ตาม cue tier "possible" (เป้าที่ยังไม่ confirmed) ด้วยหรือไม่
-# True  = ชี้ตามทั้ง confirmed และ possible (human ดูภาพ cam4 แล้วตัดสินใจกด K/LOCK)
-# False = ชี้เฉพาะ confirmed; possible cue จะถูกถือเป็น "รอ" (cam8_wait(possible))
-# ⚠️ False เป็น default: possible cue (YOLO conf ต่ำ/ยังไม่ยืนยัน) เด้งไปมาเป็น noise
-#    ถ้า True แขนจะไล่ตาม noise = หมุนขึ้นลงทันทีที่เข้า AUTO. เปิด True เฉพาะเมื่อ
-#    cam8 กรอง possible ดีพอแล้วเท่านั้น (เหมือนเวอร์ชัน working เดิมที่ตามแต่ confirmed)
-ARM_CUE_FOLLOW_POSSIBLE: bool = False
 
 # --- Cam8 cue bbox size matching (ช่วยเลือก detection บน cam4 ใน LOCK/sticky) ---
 # เปิด/ปิด feature นี้; ปิดไว้ก่อนเป็น default จนกว่าจะทดสอบ
@@ -2360,13 +2353,12 @@ def _tick_safe(ctx):
 
 
 def _tick_manual(ctx):
-    """MANUAL mode: no-op.
-
-    การขับแขนด้วยจอยสติ๊กใน MANUAL ทำที่จุดเดียวใน main loop (gate ด้วย MODE_MANUAL,
-    ทำงานได้แม้ยังไม่มี px/deg calibration). เดิม apply ที่นี่ด้วยทำให้ MANUAL
-    เรียก apply ซ้ำ 2 ครั้ง/เฟรม → แขนเคลื่อน/drift เร็ว 2 เท่า. ตัดออกให้เหลือจุดเดียว.
-    """
-    return
+    """MANUAL mode: ควบคุมแขนด้วยจอยสติ๊กเท่านั้น."""
+    joystick_mapper = ctx.get("joystick_mapper")
+    js_state = ctx.get("js_state")
+    dt_loop = ctx.get("dt_loop", 0.033)
+    if joystick_mapper is not None and js_state is not None:
+        joystick_mapper.apply(js_state, dt_loop)
 
 
 # =============================================================================
@@ -2722,13 +2714,7 @@ def _tick_auto(ctx):
         _cam8_cue is not None
         and str(_cam8_cue.get("source_camera", "")).lower() == "cam8"
     )
-    # confidence tier: "confirmed" | "possible" (cue เก่าไม่มี field = confirmed)
-    _cam8_cue_tier = (
-        str(_cam8_cue.get("tier", "confirmed")).lower() if _cam8_cue is not None else "confirmed"
-    )
-    _cam8_tier_ok = (_cam8_cue_tier == "confirmed") or ARM_CUE_FOLLOW_POSSIBLE
-    ctx["auto_cue_tier"] = _cam8_cue_tier if _cam8_source_ok else None
-    if _cam8_source_ok and _cam8_tier_ok and _cam8_calib is not None and _cam8_pixel_to_arm_degrees is not None:
+    if _cam8_source_ok and _cam8_calib is not None and _cam8_pixel_to_arm_degrees is not None:
         _cx8 = _cam8_cue.get("cx")
         _cy8 = _cam8_cue.get("cy")
         _fw8 = _cam8_cue.get("frame_w")
@@ -2780,11 +2766,10 @@ def _tick_auto(ctx):
         )
         _move_issued = (move_pan != 0.0 or move_tilt != 0.0)
         ctx["last_continuous_arm_move_time"] = last_continuous_arm_move_time
-        ctx["auto_cue_source"] = "cam8" if _cam8_cue_tier == "confirmed" else "cam8(poss)"
+        ctx["auto_cue_source"] = "cam8"
 
-        # tick bias learner state machine — เรียนรู้จาก confirmed cue เท่านั้น
-        # (possible cue อาจเป็นเป้าปลอม ไม่ควรใช้ปรับ residual bias)
-        if _bias_learner is not None and CAM8_AUTO_ONLINE_BIAS_ENABLED and _cam8_cue_tier == "confirmed":
+        # tick bias learner state machine
+        if _bias_learner is not None and CAM8_AUTO_ONLINE_BIAS_ENABLED:
             _target_det = ctx.get("target_det")
             _w = ctx.get("w", 0)
             _h = ctx.get("h", 0)
@@ -2813,9 +2798,6 @@ def _tick_auto(ctx):
     # No valid cam8 cue (or no calibration): hold position in AUTO (strict cam8-only mode).
     if _cam8_cue is not None and not _cam8_source_ok:
         ctx["auto_cue_source"] = "cam8_wait(non-cam8)"
-    elif _cam8_source_ok and not _cam8_tier_ok:
-        # cue สดแต่เป็น possible tier และ ARM_CUE_FOLLOW_POSSIBLE=False → รอ
-        ctx["auto_cue_source"] = "cam8_wait(possible)"
     else:
         ctx["auto_cue_source"] = "cam8_wait"
     return
@@ -3145,10 +3127,8 @@ def main():
                 arm_tracker = Cam4ArmTracker(arm_controller, camera_name=camera_name)
                 print("Gun Aim Assist: arm homing/connect OK — proceeding to camera.")
                 if arm_mode_manager is not None:
-                    # เริ่มที่ SAFE (แขนไม่รับ joystick) กันแขนขยับเองจากจอย drift
-                    # ทันทีที่เปิดโปรแกรม — ผู้ใช้กด M เข้า MANUAL / A เข้า AUTO เมื่อพร้อม
-                    arm_mode_manager.set_mode(MODE_SAFE)
-                    print("Gun Aim Assist: startup homing done → MODE:SAFE (กด M=MANUAL, A=AUTO)")
+                    arm_mode_manager.set_mode(MODE_MANUAL)
+                    print("Gun Aim Assist: startup homing done → MODE:MANUAL")
             else:
                 print("❌ Gun Aim Assist: Cam4ArmController connect()/homing failed.")
                 arm_controller = None
@@ -4702,12 +4682,7 @@ def main():
                     pending_impacts = _still
 
                 # ควบคุมแขนด้วย joystick เฉพาะเมื่ออยู่โหมด MANUAL
-                # (guard None: ถอดจอย/จอย init ไม่ผ่าน → joystick_mapper/js_state = None)
-                if (
-                    arm_mode_manager.mode == MODE_MANUAL
-                    and joystick_mapper is not None
-                    and js_state is not None
-                ):
+                if arm_mode_manager.mode == MODE_MANUAL:
                     joystick_mapper.apply(js_state, dt_loop)
 
             # Skip drive-verify / idle-probe during px/deg calib (arrow nudge 0.1° triggers false stall)
@@ -4791,23 +4766,12 @@ def main():
                         _cue_age = arm_cue_receiver.get_cue_age_ms()
                         _hud_ctx["show_auto_diag"] = True
                         _hud_ctx["src_label"] = f"SRC:{auto_cue_source}"
-                        _hud_ctx["src_color"] = (
-                            (0, 255, 100) if auto_cue_source == "cam8" else (0, 200, 255)
-                        )
-                        _cue_now = arm_cue_receiver.get_latest_cue()
-                        _cue_tier_now = (
-                            str(_cue_now.get("tier", "confirmed")).lower() if _cue_now else None
-                        )
-                        _cue_tier_tag = (
-                            "" if _cue_tier_now in (None, "confirmed")
-                            else f"[{_cue_tier_now[:4].upper()}]"
-                        )
+                        _hud_ctx["src_color"] = (0, 255, 100) if auto_cue_source == "cam8" else (0, 200, 255)
                         _hud_ctx["cue_label"] = (
-                            f"CUE:{_cue_age:.0f}ms{_cue_tier_tag}"
-                            if _cue_age is not None else "CUE:none"
+                            f"CUE:{_cue_age:.0f}ms" if _cue_age is not None else "CUE:none"
                         )
                         _hud_ctx["cue_color"] = (
-                            ((0, 255, 0) if _cue_tier_now != "possible" else (0, 200, 255))
+                            (0, 255, 0)
                             if (_cue_age is not None and _cue_age < ARM_CUE_TTL_MS)
                             else (0, 80, 255)
                         )

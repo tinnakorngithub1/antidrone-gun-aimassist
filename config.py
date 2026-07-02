@@ -33,14 +33,7 @@ CAM4_ARM_SWAP_PAN_TILT = False
 # → แขนขยับ ภาพเลื่อนจริง (ego-motion) เหมือนติดตามเป้าจริง (ดู lock_sim_target.py)
 # ⚠️ ต้อง False ในการใช้งานจริง — เปิดเฉพาะตอนทดสอบ
 # ============================================================================
-# สลับผ่าน env var (ไม่ต้องแก้ไฟล์นี้): ANTIDRONE_SIM=1 เปิดซิม, =0 หรือไม่ตั้ง = ปิด (ใช้จริง)
-# ไม่ตั้ง env → ปิดซิมเสมอ (ปลอดภัย: กันเผลอรันใช้จริงแล้วมีโดรนเสมือนโผล่)
-# ใช้ ./run_real.sh (ใช้จริง) หรือ ./run_sim.sh (ทดสอบ) แทนการแก้บรรทัดนี้
-LOCK_SIM_TARGET_ENABLED = os.environ.get("ANTIDRONE_SIM", "0") == "1"
-if LOCK_SIM_TARGET_ENABLED:
-    print("⚠️  [config] โหมดทดสอบ: โดรนเสมือน ENABLED (ANTIDRONE_SIM=1)")
-else:
-    print("✅ [config] โหมดใช้จริง: โดรนเสมือน OFF")
+LOCK_SIM_TARGET_ENABLED = True        # เปิด/ปิดโดรนเสมือน
 LOCK_SIM_TARGET_PATTERN = "realistic" # realistic | sine | hover | figure8 | manual (i/j/k/l)
                                       # realistic = บินอิสระ waypoint (เร่ง/หยุด/หักหลบ/โฉบ) เหมือนจริง
 LOCK_SIM_TARGET_OMEGA_DEG_S = 8.0     # peak angular rate สำหรับ sine/figure8 (deg/s)
