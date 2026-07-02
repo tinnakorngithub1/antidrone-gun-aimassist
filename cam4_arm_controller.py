@@ -109,6 +109,7 @@ class Cam4ArmController:
         self._idle_probe_fail_streak: int = 0
         self._grbl_read_fail_streak: int = 0
         self._homing_fault: Optional[str] = None  # "no_motion" | "homing_fail"
+        self._manual_no_home: bool = False  # True = เชื่อมต่อแบบ manual jog (homing ล้ม/ค้าง)
         self._operator_joystick_active: bool = False
         self._camera_operator_lock: bool = False
         self._camera_probe_grace_until_t: float = 0.0
@@ -1170,8 +1171,11 @@ class Cam4ArmController:
                     time.sleep(1.0)
             if not homing_ok:
                 print("❌ Homing failed after {} attempt(s).".format(max_homing_retries))
-                self._send_gcode("$X", wait_ok=True)
                 self._mark_homing_failed()
+                # fallback: เข้าโหมด manual jog แทนการออกโปรแกรม (ให้เข้าหน้าจอ + ขยับจอยได้)
+                if getattr(config, "CAM4_ARM_HOMING_FAIL_FALLBACK_MANUAL", True):
+                    return self._fallback_manual_connect()
+                self._send_gcode("$X", wait_ok=True)
                 return False
         else:
             if cam4_arm_homing:
@@ -1187,8 +1191,11 @@ class Cam4ArmController:
                         time.sleep(1.0)
                 if not homing_ok:
                     print("❌ Homing failed after {} attempt(s).".format(max_homing_retries))
-                    self._send_gcode("$X", wait_ok=True)
                     self._mark_homing_failed()
+                    # fallback: เข้าโหมด manual jog แทนการออกโปรแกรม (ให้เข้าหน้าจอ + ขยับจอยได้)
+                    if getattr(config, "CAM4_ARM_HOMING_FAIL_FALLBACK_MANUAL", True):
+                        return self._fallback_manual_connect()
+                    self._send_gcode("$X", wait_ok=True)
                     return False
             else:
                 self._send_gcode("$H", wait_ok=True)
@@ -1225,6 +1232,37 @@ class Cam4ArmController:
         else:
             self._homing_fault = "homing_fail"
             print("[ARM] homing failed — check USB cable, limits, GRBL alarm")
+
+    def _fallback_manual_connect(self) -> bool:
+        """Homing ล้ม/ค้าง → เชื่อมต่อแบบ MANUAL JOG (ไม่ได้ home).
+
+        ปลด alarm ($X) + zero ตำแหน่งปัจจุบัน (G92) เพื่อให้เข้าหน้าจอได้ทันที
+        และขยับแขนด้วยจอยสติ๊กปรับตำแหน่งใช้ชั่วคราวได้ (แทนการ return False → ออกโปรแกรม).
+        mark_connect_ok() ทำให้ arm ถือว่า healthy → fault monitor ไม่วน re-home (ค้างซ้ำ).
+        ⚠️ ยังไม่ได้ home = ไม่มี absolute reference; AUTO/LOCK อาจ offset จนกว่าจะ home ใหม่.
+        """
+        try:
+            self._send_gcode("$X", wait_ok=True)          # ปลด alarm lock
+            self._send_gcode("G92 X0 Y0", wait_ok=True)   # zero ตำแหน่งปัจจุบัน
+            self._send_gcode("G90", wait_ok=True)
+            if self.grbl_units_mm:
+                self._send_gcode("G21", wait_ok=True)
+            self.pos_x = 0.0
+            self.pos_y = 0.0
+            self.target_x = 0.0
+            self.target_y = 0.0
+            self.current_feed_rate = self.default_feed_rate
+            if not self._finalize_connect():
+                return False
+            self._manual_no_home = True   # HUD/บันทึก: ยังไม่ได้ home
+            print(
+                "⚠️ Cam4ArmController: homing ล้ม/ค้าง → เชื่อมต่อแบบ MANUAL JOG (ไม่ได้ home). "
+                "เข้าหน้าจอได้ ขยับแขนด้วยจอยสติ๊กปรับตำแหน่งได้ — ควร home ใหม่เมื่อแก้ปัญหาแล้ว."
+            )
+            return True
+        except Exception as e:
+            print(f"❌ Cam4ArmController: fallback manual connect failed: {e}")
+            return False
 
     def _mark_connect_ok(self) -> None:
         """After successful connect/selftest: healthy and defer first idle probe."""
