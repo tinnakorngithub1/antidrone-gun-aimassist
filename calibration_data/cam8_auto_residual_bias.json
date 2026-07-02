@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "grid_rows": 10,
+  "grid_cols": 20,
+  "reference": "cam8_cue_px_cell",
+  "cells": {},
+  "meta": {
+    "alpha": 0.03,
+    "updated_at": 1782982171.9948175
+  }
+}

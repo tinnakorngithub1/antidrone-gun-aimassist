@@ -1,0 +1,8 @@
+{
+  "offset_x": -450,
+  "offset_y": 400,
+  "effective_range_m": 100.0,
+  "muzzle_velocity_ms": 900.0,
+  "bullet_weight_g": 9.0,
+  "target_size_m": 0.3
+}

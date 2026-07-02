@@ -1,0 +1,59 @@
+# ===== Anti-drone project .gitignore =====
+# เก็บเฉพาะโค้ด + .engine (โมเดลที่ใช้จริง) + calibration + เสียง
+# ไม่เก็บ: วิดีโอ, โมเดลดิบ, ไฟล์ซ้ำ/เก่า, ผล output, cache
+
+# วิดีโอ (ใหญ่มาก — ห้ามขึ้น)
+*.mp4
+*.mov
+*.avi
+*.mkv
+
+# โมเดลดิบ (เก็บเฉพาะ .engine ที่ add ไว้แล้ว)
+*.pt
+*.onnx
+
+# engine เก่า/ไม่ได้ใช้ (เก็บเฉพาะที่ add explicit)
+best_*.engine
+last_*.engine
+
+# macOS metadata + junk
+._*
+.DS_Store
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ไฟล์ซ้ำ/สำรอง/เก่า (กัน confusing)
+_backup_*/
+*(copy)*
+*(another copy)*
+*_backup*.py
+*_best1.py
+*_best2.py
+*_best.py
+*_2.py
+*_3.py
+*.save
+
+# โฟลเดอร์ data/training/output (ใหญ่ ไม่ใช่ runtime)
+datasets/
+runs/
+models/
+metadata/
+active_teach/
+jetson_setup_logs/
+"calibration_data (copy)/"
+
+# ผล sim/plot ที่สร้างใหม่ได้ (เก็บ csv สำคัญได้ถ้าต้องการ add เอง)
+*_tmp.csv
+*_tmp.png
+compare.mp4
+demo.mp4
+
+# log
+*.log
+run.txt
+events.csv

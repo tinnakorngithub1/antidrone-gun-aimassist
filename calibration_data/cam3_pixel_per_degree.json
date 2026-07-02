@@ -1,0 +1,10 @@
+{
+  "output_width": 1280,
+  "output_height": 720,
+  "crosshair": {
+    "x": 640.0,
+    "y": 360.0
+  },
+  "pixel_per_degree_x": 52.55641003685932,
+  "pixel_per_degree_y": -43.133873804617025
+}

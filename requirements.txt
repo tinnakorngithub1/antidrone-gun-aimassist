@@ -1,0 +1,18 @@
+# Cam4 arm + Gun aim assist (Jetson / dev)
+# Install: pip install -r requirements.txt
+# Note: On Jetson, use opencv/build from system or opencv-python-headless if needed.
+
+numpy>=1.19.0
+pyserial>=3.5
+pygame>=2.0.0
+opencv-contrib-python>=4.5.0
+ultralytics>=8.0.0
+
+# Optional: playsound for audio (gun_aim_assist)
+# playsound>=1.3.0
+
+# Optional: PyTorch for learned aim controller (train + inference)
+# pip install torch  # หรือตาม platform (Jetson ใช้ torch จาก NVIDIA)
+
+# Optional: onnxruntime สำหรับ inference แบบ .onnx (เบากว่า torch)
+# pip install onnxruntime
