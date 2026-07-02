@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "left_camera": "cam3",
+  "right_camera": "cam7",
+  "output_width": 2560,
+  "output_height": 720,
+  "blend_width": 0,
+  "left_offset": {
+    "x": 41,
+    "y": 2
+  },
+  "right_offset": {
+    "x": 1285,
+    "y": -11
+  },
+  "left_crop": {
+    "left": 0,
+    "top": 0,
+    "right": 0,
+    "bottom": 0
+  },
+  "right_crop": {
+    "left": 0,
+    "top": 0,
+    "right": 0,
+    "bottom": 0
+  }
+}
