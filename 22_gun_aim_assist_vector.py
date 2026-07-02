@@ -2357,12 +2357,13 @@ def _tick_safe(ctx):
 
 
 def _tick_manual(ctx):
-    """MANUAL mode: ควบคุมแขนด้วยจอยสติ๊กเท่านั้น."""
-    joystick_mapper = ctx.get("joystick_mapper")
-    js_state = ctx.get("js_state")
-    dt_loop = ctx.get("dt_loop", 0.033)
-    if joystick_mapper is not None and js_state is not None:
-        joystick_mapper.apply(js_state, dt_loop)
+    """MANUAL mode: no-op.
+
+    การขับแขนด้วยจอยสติ๊กใน MANUAL ทำที่จุดเดียวใน main loop (gate ด้วย MODE_MANUAL,
+    ทำงานได้แม้ยังไม่มี px/deg calibration). เดิม apply ที่นี่ด้วยทำให้ MANUAL
+    เรียก apply ซ้ำ 2 ครั้ง/เฟรม → แขนเคลื่อน/drift เร็ว 2 เท่า. ตัดออกให้เหลือจุดเดียว.
+    """
+    return
 
 
 # =============================================================================
@@ -4696,7 +4697,12 @@ def main():
                     pending_impacts = _still
 
                 # ควบคุมแขนด้วย joystick เฉพาะเมื่ออยู่โหมด MANUAL
-                if arm_mode_manager.mode == MODE_MANUAL:
+                # (guard None: ถอดจอย/จอย init ไม่ผ่าน → joystick_mapper/js_state = None)
+                if (
+                    arm_mode_manager.mode == MODE_MANUAL
+                    and joystick_mapper is not None
+                    and js_state is not None
+                ):
                     joystick_mapper.apply(js_state, dt_loop)
 
             # Skip drive-verify / idle-probe during px/deg calib (arrow nudge 0.1° triggers false stall)
