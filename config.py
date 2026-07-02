@@ -103,7 +103,10 @@ CAM4_ARM_IDLE_PROBE_FAILS_BEFORE_HOMING = 2  # motion fail เท่านั้
 CAM4_ARM_PROBE_FAIL_RETRY_INTERVAL_SEC = 5.0  # หลัง motion WARN แล้ว probe ถี่ขึ้น
 CAM4_ARM_GRBL_READ_PROBE_INTERVAL_SEC = 120.0  # หลัง grbl-read fail อย่า probe ถี่ (log only)
 # ตรวจ GRBL เป็นระยะ — จับถอด USB/ปลั๊กแม้ ser.is_open ยัง True
-CAM4_ARM_LIVENESS_CHECK_ENABLED = True
+# ⚠️ ปิด liveness: probe ? ล้ม 100% (false positive) แม้ GRBL มีชีวิต (reconnect สำเร็จทุกครั้ง +
+# เทสต์ตรงได้ <Idle|..>) — น่าจะชนกับ thread อื่นที่ใช้ serial ร่วม → วน reconnect + reset โหมดทุก ~20 วิ
+# การจับ fault จริงยังมี motion-probe ตอนสั่ง move (ไม่เสียการป้องกัน). เปิดใหม่ได้ถ้าแก้สาเหตุ probe แล้ว
+CAM4_ARM_LIVENESS_CHECK_ENABLED = False
 CAM4_ARM_LIVENESS_INTERVAL_SEC = 8.0
 CAM4_ARM_LIVENESS_GRBL_TIMEOUT_SEC = 3.0   # เดิม 1.5 — ให้เวลา GRBL ตอบ ? มากขึ้น (กัน false "serial lost")
 CAM4_ARM_LIVENESS_FAILS_BEFORE_DISC = 4    # เดิม 2 — ทนหลาย probe ก่อนตัดสินว่าหลุด (กัน reconnect วนลูป)
