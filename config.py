@@ -33,7 +33,7 @@ CAM4_ARM_SWAP_PAN_TILT = False
 # → แขนขยับ ภาพเลื่อนจริง (ego-motion) เหมือนติดตามเป้าจริง (ดู lock_sim_target.py)
 # ⚠️ ต้อง False ในการใช้งานจริง — เปิดเฉพาะตอนทดสอบ
 # ============================================================================
-LOCK_SIM_TARGET_ENABLED = True        # เปิด/ปิดโดรนเสมือน
+LOCK_SIM_TARGET_ENABLED = False       # default โหมดจริง (ไม่มีโดรนจำลอง) — กดปุ่ม I ในแอปเพื่อเปิด/ปิดตอน runtime
 LOCK_SIM_TARGET_PATTERN = "realistic" # realistic | sine | hover | figure8 | manual (i/j/k/l)
                                       # realistic = บินอิสระ waypoint (เร่ง/หยุด/หักหลบ/โฉบ) เหมือนจริง
 LOCK_SIM_TARGET_OMEGA_DEG_S = 8.0     # peak angular rate สำหรับ sine/figure8 (deg/s)
@@ -149,7 +149,9 @@ CAM4_ARM_HOMING_MPOS_TOLERANCE_MM = 15.0  # ใช้เมื่อ VERIFY_MPOS
 CAM4_ARM_HOMING_VERIFY_WPOS_HOME = True   # หลัง G92 ต้องได้ WPos ≈ 0,0 (สำคัญกว่า MPos)
 CAM4_ARM_HOMING_WPOS_TOLERANCE_MM = 3.0
 # homing/connect ล้มเหลว → ออกจาก 22_gun_aim_assist_vector ทันที (ไม่รันต่อโดยไม่มีแขน)
-CAM4_ARM_EXIT_IF_HOMING_FAILS = True
+# False = ไม่ออก ให้ fallback เป็น MANUAL JOG เข้าหน้าจอได้ แล้วใช้ปุ่ม J jog / H home แก้เอง
+# (แขนตัวนี้ limit switch เสีย ถ้าเผลอเปิด homing จริงจะ fail — ตั้ง False กันโดนล็อกออกจากโปรแกรม)
+CAM4_ARM_EXIT_IF_HOMING_FAILS = False
 # พิมพ์คำสั่ง G-code ที่ส่งไป GRBL ทุกคำสั่ง (ใช้เทียบกับ OpenBuilds ได้)
 CAM4_ARM_VERBOSE_GCODE = False
 # แบบ v34: True = ไม่ทำ homing (แขนไม่ขยับตอนเปิด). False = รัน homing แล้วไป home ($X → $HY → $HX → G53 → G92 X0 Y0)

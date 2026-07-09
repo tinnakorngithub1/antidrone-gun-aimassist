@@ -9,11 +9,16 @@ Gun Aim Assist Vector: ระบบช่วยเล็งกล้องติ
   MANUAL      : ปุ่ม 9 บนจอย หรือปุ่ม 3 ปลด LOCK -> MANUAL
   F           : สลับโหมด SAFE   (แขนหยุด)
   L           : สลับโหมด LOCK   (lock ตาม YOLO detection)
+  I           : เปิด/ปิดโดรนจำลอง (SIMULATION) — default ปิด (โหมดจริง); เปิดแล้วซ้อม LOCK+ยิงได้ (←→↑↓ บังคับ, V pattern)
   SPACE       : ยิง (ยกเว้น SAFE mode)
   C           : เข้าโหมดปรับ center ศูนย์เล็ง (WASD/arrow เลื่อน, Enter บันทึก, R reset)
   S           : เข้าโหมด settings (1-4 เลือก field, arrow ปรับค่า, Enter บันทึก)
   R           : แสดง/ซ่อน calibration status overlay (pixel_per_degree ของกล้องที่เลือก)
   P           : reconnect แขน (homing+home ใหม่ หลัง power-cycle โดยไม่ต้องปิดโปรแกรม)
+  H           : สั่งแขนกลับ home ทันที (go_home = G0 ไป (0,0) เบา ๆ ไม่ re-home; บังคับ SAFE ระหว่างวิ่ง)
+  J           : เข้า/ออกโหมด JOG — หมุนแขนเองด้วยคีย์บอร์ด ทำงานแม้แขนค้าง/STALL/SAFE
+                (เข้าแล้ว: ปลดล็อก $X อัตโนมัติ; ลูกศร/WASD ขยับ, [ ] ปรับ step, X ปลดล็อกซ้ำ,
+                 Z ตั้ง home ตรงนี้ (re-zero, สำหรับแขนไม่มี limit switch), H กลับ home, J/Esc ออก)
   B           : เปิด/ปิด online residual bias learning — AUTO mode only
                 (HUD แสดง BIAS:ON/OFF(B) + จำนวน cell ที่มีข้อมูล)
 
@@ -39,6 +44,7 @@ import math
 import numpy as np
 import os
 import struct
+import threading
 import time
 import wave
 from pathlib import Path
@@ -1624,6 +1630,9 @@ def _gun_key_hint_parts():
         ("[M]map", _white),
         (f"[{KEY_PXDEG_CALIB}]px/deg", _white),
         ("[P]rearm", _white),
+        ("[H]home", _white),
+        ("[J]jog", _white),
+        ("[I]sim", _white),
         (f"[{KEY_ADJUST_CENTER}]center", _white),
         (f"[{KEY_SETTINGS}]ballistics", _white),
         (f"[{KEY_QUIT}]quit", _white),
@@ -1711,6 +1720,96 @@ def _manual_arm_reconnect(arm_controller) -> None:
             print("[ARM] reconnect already in progress")
     elif hasattr(arm_controller, "try_reconnect"):
         arm_controller.try_reconnect()
+
+
+def _manual_arm_go_home(arm_controller, arm_mode_manager=None) -> None:
+    """สั่งแขนกลับตำแหน่ง home (0,0) ทันที — G0 ธรรมดา ไม่ re-home (เบา/เร็วกว่าปุ่ม P).
+
+    บังคับ MODE:SAFE ก่อน เพื่อไม่ให้ AUTO/LOCK/จอยแย่งขับระหว่างวิ่งกลับ home.
+    รันใน background thread (blocking=True) เพื่อให้ move เสร็จจริงโดยไม่ค้าง UI loop.
+    """
+    if arm_controller is None:
+        return
+    if arm_mode_manager is not None:
+        try:
+            arm_mode_manager.set_mode(MODE_SAFE)
+        except Exception:
+            pass
+
+    def _worker():
+        try:
+            arm_controller.go_home(blocking=True)
+            print("[ARM] go home (H) — แขนกลับตำแหน่ง home แล้ว")
+        except Exception as e:
+            print(f"[ARM] go home failed: {e}")
+
+    threading.Thread(target=_worker, daemon=True, name="arm-go-home").start()
+
+
+def _arm_jog_unlock(arm_controller) -> None:
+    """ปลด GRBL alarm/lock ($X) + ตั้ง absolute mode เพื่อให้ jog ได้แม้แขนค้าง/STALL/SAFE.
+
+    เลียนแบบ _fallback_manual_connect: $X ปลด alarm แล้วขยับด้วย G0 ได้ทันที.
+    เคลียร์ homing fault + stall tracking กันไม่ให้ fault monitor วน re-home ระหว่าง jog.
+
+    ⚠️ ใช้ wait_ok=False (ไม่รอ "ok") ด้วย 2 เหตุผล:
+       1) ไม่บล็อก GUI loop (wait_ok=True บล็อกได้ถึง 3 วิ/คำสั่ง → จอค้าง → โดน watchdog kill)
+       2) ไม่ถือ serial lock ค้าง — ถ้าถือค้าง jog move (move_relative blocking=False) จะ
+          acquire lock ไม่ได้แล้ว drop เงียบ ๆ ทำให้ "แขนไม่ขยับ". คำสั่งถูกส่งตามลำดับ FIFO
+          ทาง serial อยู่แล้ว GRBL จึงประมวลผล $X ก่อน G0 ของ jog เสมอ.
+    """
+    if arm_controller is None or getattr(arm_controller, "is_simulation_mode", False):
+        return
+    if not hasattr(arm_controller, "_send_gcode"):
+        return
+    try:
+        arm_controller._send_gcode("$X", wait_ok=False)     # ปลด alarm lock (ไม่รอ ok)
+        arm_controller._send_gcode("G90", wait_ok=False)    # absolute positioning
+        if getattr(arm_controller, "grbl_units_mm", False):
+            arm_controller._send_gcode("G21", wait_ok=False)
+        if hasattr(arm_controller, "clear_homing_fault"):
+            arm_controller.clear_homing_fault()
+        if hasattr(arm_controller, "_reset_stall_tracking"):
+            arm_controller._reset_stall_tracking()
+        arm_controller.is_healthy = True
+        print("[JOG] unlock ($X) — พร้อม jog ด้วยลูกศร/WASD")
+    except Exception as e:
+        print(f"[JOG] unlock failed: {e}")
+
+
+def _arm_jog_step(arm_controller, dpan_deg: float, dtilt_deg: float) -> None:
+    """ขยับแขนทีละ step (relative) จากปุ่มคีย์บอร์ด — ส่ง G0 ตรง ใช้ได้ทุกโหมด."""
+    if arm_controller is None:
+        return
+    try:
+        if hasattr(arm_controller, "touch_activity"):
+            arm_controller.touch_activity()
+        arm_controller.move_relative(float(dpan_deg), float(dtilt_deg), blocking=False)
+    except Exception as e:
+        print(f"[JOG] move failed: {e}")
+
+
+def _arm_jog_set_home(arm_controller) -> None:
+    """ตั้งตำแหน่งแขนปัจจุบันเป็น home ใหม่ (G92 X0 Y0) — 'รีเซต home' แบบ manual.
+
+    สำหรับแขนที่ไม่มี limit switch (homing จริงไม่ได้): jog แขนไปตำแหน่งที่อยากให้เป็น home
+    แล้วกดปุ่มนี้ → ตำแหน่งนั้นกลายเป็น (0,0). หลังจากนี้ปุ่ม H (go home) จะกลับมาที่นี่.
+    """
+    if arm_controller is None:
+        return
+    if not getattr(arm_controller, "is_simulation_mode", False) and hasattr(arm_controller, "_send_gcode"):
+        try:
+            arm_controller._send_gcode("G92 X0 Y0", wait_ok=False)
+        except Exception as e:
+            print(f"[JOG] set home failed: {e}")
+            return
+    arm_controller.pos_x = 0.0
+    arm_controller.pos_y = 0.0
+    arm_controller.target_x = 0.0
+    arm_controller.target_y = 0.0
+    if hasattr(arm_controller, "_manual_no_home"):
+        arm_controller._manual_no_home = False   # ตั้ง home แล้ว = มี reference
+    print("[JOG] set home here (G92 X0 Y0) — ตำแหน่งนี้เป็น home ใหม่แล้ว")
 
 
 def _arm_mode_name(mode: int) -> str:
@@ -3325,6 +3424,8 @@ def main():
         create_short_beep_wav(beep_path, duration_sec=BEEP_SHORT_DURATION_SEC)
 
     app_mode = "normal"
+    jog_step_choices = [0.2, 0.5, 1.0, 2.0, 5.0]   # องศาต่อการกด 1 ครั้งในโหมด JOG
+    jog_step_deg = 1.0
     cam8_stream = None
     mapping_prev_confirm = False
     pxdeg_prev_confirm = False
@@ -3470,7 +3571,9 @@ def main():
         print("⚠️ LOCK_SIM_TARGET_ENABLED=True แต่ import lock_sim_target ไม่ได้ — ปิดโดรนเสมือน")
         _vt_enabled = False
     if _vt_enabled:
-        print("🎯 LOCK_SIM_TARGET เปิดอยู่ — โดรนเสมือนจะถูกฉีดลงเฟรม (ปุ่ม i/j/k/l บังคับ, 0/8/9 pattern)")
+        print("🎯 LOCK_SIM_TARGET เปิดอยู่ — โดรนเสมือนจะถูกฉีดลงเฟรม (ปุ่ม I ปิด, ←→↑↓ บังคับ, V เปลี่ยน pattern)")
+    elif VirtualDroneTarget is not None:
+        print("🛡️ โหมดจริง (ไม่มีโดรนจำลอง) — กดปุ่ม I เพื่อเปิดโดรนจำลองซ้อม LOCK+ยิง")
 
     # Cam8 cue state (อัพเดทแต่ละเฟรมจาก arm_cue_receiver; ห้ามแตะใน LOCK)
     auto_cue_source: str = "cam8_wait"   # "cam8" or "cam8_wait"
@@ -3902,7 +4005,10 @@ def main():
                     arm_controller.maybe_check_arm_liveness()
                 if arm_controller is not None and hasattr(arm_controller, "maybe_verify_drive_motion"):
                     arm_controller.maybe_verify_drive_motion()
-                if arm_controller is not None and hasattr(arm_controller, "maybe_handle_arm_fault_recovery"):
+                # ระหว่าง JOG: กันไม่ให้ fault monitor วน re-home แย่งขณะผู้ใช้หมุนแขนแก้อาการค้าง
+                if app_mode == "jog":
+                    pass
+                elif arm_controller is not None and hasattr(arm_controller, "maybe_handle_arm_fault_recovery"):
                     arm_controller.maybe_handle_arm_fault_recovery(
                         camera_operator_lock=camera_operator_lock
                     )
@@ -4146,7 +4252,9 @@ def main():
                         "muzzle_velocity_ms": config.muzzle_velocity_ms,
                         "target_size_m": config.target_size_m,
                     }
-                    if arm_mode_manager.mode == MODE_AUTO:
+                    if app_mode == "jog":
+                        pass  # JOG: ขับแขนด้วยคีย์บอร์ดเท่านั้น — ข้าม auto/lock/manual tick
+                    elif arm_mode_manager.mode == MODE_AUTO:
                         _tick_auto(_ctx)
                     elif arm_mode_manager.mode == MODE_LOCK:
                         _tick_lock(_ctx)
@@ -4681,12 +4789,13 @@ def main():
                             _still.append((imp_t, bpan, btilt, tof))
                     pending_impacts = _still
 
-                # ควบคุมแขนด้วย joystick เฉพาะเมื่ออยู่โหมด MANUAL
-                if arm_mode_manager.mode == MODE_MANUAL:
+                # ควบคุมแขนด้วย joystick เฉพาะเมื่ออยู่โหมด MANUAL (ยกเว้นระหว่าง JOG คีย์บอร์ด)
+                if arm_mode_manager.mode == MODE_MANUAL and app_mode != "jog":
                     joystick_mapper.apply(js_state, dt_loop)
 
             # Skip drive-verify / idle-probe during px/deg calib (arrow nudge 0.1° triggers false stall)
-            if app_mode != "cam4_pxdeg_calib":
+            # และระหว่าง JOG — กันไม่ให้ fault monitor วน re-home แย่งขณะผู้ใช้หมุนแขนแก้อาการค้าง
+            if app_mode not in ("cam4_pxdeg_calib", "jog"):
                 if arm_controller is not None and hasattr(arm_controller, "maybe_verify_drive_motion"):
                     arm_controller.maybe_verify_drive_motion()
                 if arm_controller is not None and hasattr(arm_controller, "maybe_handle_arm_fault_recovery"):
@@ -4903,6 +5012,42 @@ def main():
                     cv2.putText(frame, s, (bx + pad, y_off), cv2.FONT_HERSHEY_SIMPLEX, 0.6, line_color, 1)
                     y_off += th + 4
 
+            # Overlay โหมด JOG: หมุนแขนเองด้วยคีย์บอร์ด (แม้แขนค้าง/SAFE)
+            if app_mode == "jog":
+                _arm_lbl, _arm_col = _arm_hud_label_and_color(arm_controller)
+                _jog_lines = [
+                    ("== JOG MODE (manual arm) ==", (0, 255, 255)),
+                    (f"step: {jog_step_deg:.2f} deg    arm: {_arm_lbl}", _arm_col),
+                    ("arrows / WASD : rotate arm", (230, 230, 230)),
+                    ("[ ]  : step down/up    X : unlock ($X)", (230, 230, 230)),
+                    ("Z : set home here    H : go home", (180, 255, 180)),
+                    ("J / Esc : exit", (230, 230, 230)),
+                ]
+                _jbx, _jby, _jpad = 20, 90, 10
+                _jmax_w, _jlh = 0, []
+                for _s, _ in _jog_lines:
+                    (_tw, _th), _ = cv2.getTextSize(_s, cv2.FONT_HERSHEY_SIMPLEX, 0.62, 1)
+                    _jmax_w = max(_jmax_w, _tw)
+                    _jlh.append(_th)
+                _jbox_h = sum(_jlh) + _jpad * 2 + (len(_jog_lines) - 1) * 6
+                _jbox_w = _jmax_w + _jpad * 2
+                cv2.rectangle(frame, (_jbx, _jby), (_jbx + _jbox_w, _jby + _jbox_h), (0, 0, 0), -1)
+                cv2.rectangle(frame, (_jbx, _jby), (_jbx + _jbox_w, _jby + _jbox_h), (0, 255, 255), 2)
+                _jy = _jby + _jpad + _jlh[0]
+                for _i, (_s, _c) in enumerate(_jog_lines):
+                    cv2.putText(frame, _s, (_jbx + _jpad, _jy), cv2.FONT_HERSHEY_SIMPLEX, 0.62, _c, 1)
+                    _jy += _jlh[_i] + 6
+
+            # Badge: SIM เปิดอยู่ (โดรนจำลอง) — เตือนว่าไม่ใช่โหมดจริง
+            if _vt_enabled and app_mode == "normal":
+                _sim_txt = "SIM ON [I]"
+                _sim_fs, _sim_th = 1.6, 3
+                (_stw, _sth), _ = cv2.getTextSize(_sim_txt, cv2.FONT_HERSHEY_SIMPLEX, _sim_fs, _sim_th)
+                _sbx = w - _stw - 28
+                cv2.rectangle(frame, (_sbx - 14, 16), (_sbx + _stw + 14, 16 + _sth + 20), (0, 0, 0), -1)
+                cv2.rectangle(frame, (_sbx - 14, 16), (_sbx + _stw + 14, 16 + _sth + 20), (0, 220, 255), 3)
+                cv2.putText(frame, _sim_txt, (_sbx, 16 + _sth + 8), cv2.FONT_HERSHEY_SIMPLEX, _sim_fs, (0, 220, 255), _sim_th)
+
             # ถ้ากำลังยิง ให้ flash ศูนย์เล็งทับ HUD ปกติ
             if is_firing:
                 fire_color = (255, 255, 0)  # เหลืองสว่าง
@@ -4987,6 +5132,27 @@ def main():
                     calibration_status_until = time.time() + 10.0 if show_calibration_status else 0.0
                 elif key in (ord("p"), ord("P")):
                     _manual_arm_reconnect(arm_controller)
+                # ปุ่ม H: สั่งแขนกลับ home ทันที (go_home เบา ๆ ไม่ re-home)
+                elif key in (ord("h"), ord("H")):
+                    _manual_arm_go_home(arm_controller, arm_mode_manager)
+                # ปุ่ม J: เข้าโหมด JOG — หมุนแขนเองด้วยคีย์บอร์ด แม้แขนค้าง/STALL/SAFE
+                elif key in (ord("j"), ord("J")):
+                    if arm_controller is None:
+                        print("[JOG] ไม่มี arm controller")
+                    else:
+                        if arm_mode_manager is not None:
+                            try:
+                                arm_mode_manager.set_mode(MODE_SAFE)
+                            except Exception:
+                                pass
+                        if hasattr(arm_controller, "note_joystick_operator_active"):
+                            arm_controller.note_joystick_operator_active(True)
+                        _arm_jog_unlock(arm_controller)
+                        app_mode = "jog"
+                        print(
+                            "[JOG] เข้าโหมด JOG — ลูกศร/WASD ขยับแขน | [ ] ปรับ step | "
+                            "X ปลดล็อกซ้ำ | H กลับ home | J/Esc ออก"
+                        )
                 # ปุ่ม B: toggle online residual bias learning (AUTO mode)
                 elif key in (ord("b"), ord("B")):
                     CAM8_AUTO_ONLINE_BIAS_ENABLED = not CAM8_AUTO_ONLINE_BIAS_ENABLED
@@ -5014,6 +5180,17 @@ def main():
                     _reset_target_tracking_state()
                 elif key in (ord("t"), ord("T")):
                     _apply_detection_engine_toggle()
+                # ปุ่ม I: เปิด/ปิดโดรนจำลอง (SIMULATION) — default ปิด (โหมดจริง)
+                elif key in (ord("i"), ord("I")):
+                    if VirtualDroneTarget is None:
+                        print("[SIMDRONE] ใช้ไม่ได้ — import lock_sim_target ไม่สำเร็จ")
+                    else:
+                        _vt_enabled = not _vt_enabled
+                        if not _vt_enabled:
+                            virtual_target = None   # หยุดวาด + หยุด inject เข้า LOCK
+                            print("[SIMDRONE] OFF — โหมดจริง (ไม่มีโดรนจำลอง)")
+                        else:
+                            print("[SIMDRONE] ON — โดรนจำลองจะขึ้นในเฟรม (LOCK+ยิงซ้อมได้), ←→↑↓ บังคับ, V pattern")
                 elif key in (ord("+"), ord("=")):
                     runtime_conf_detect = _adjust_yolo_conf(runtime_conf_detect, YOLO_CONF_STEP)
                     print(f"YOLO detect conf -> {runtime_conf_detect:.2f} (lock fixed {YOLO_CONF_LOCK:.2f})")
@@ -5185,6 +5362,37 @@ def main():
                             if _cam8_calib_load is not None:
                                 cam8_calib_data = _cam8_calib_load(_CAM8_CALIB_FILE)
                                 print(f"[MAP] calib reloaded: {'OK' if cam8_calib_data else 'MISSING'}")
+            elif app_mode == "jog":
+                # JOG: หมุนแขนเองด้วยคีย์บอร์ด — ส่ง G0 ตรง ไม่ผ่าน mode tick → ทำงานแม้ SAFE/fault
+                if key in (27,) or key in (ord("j"), ord("J")):
+                    if arm_controller is not None and hasattr(arm_controller, "note_joystick_operator_active"):
+                        arm_controller.note_joystick_operator_active(False)
+                    app_mode = "normal"
+                    print("[JOG] ออกจากโหมด JOG")
+                # หมายเหตุ: ไม่ใช้รหัสลูกศรเก่า 81-84 เพราะชนกับตัวอักษร
+                # (83=ord("S"), 81=ord("Q")) → ใช้รหัส GTK 65361-65364 + WASD แทน
+                elif key in (65363, ord("d"), ord("D")):        # → / D : pan +
+                    _arm_jog_step(arm_controller, +jog_step_deg, 0.0)
+                elif key in (65361, ord("a"), ord("A")):        # ← / A : pan -
+                    _arm_jog_step(arm_controller, -jog_step_deg, 0.0)
+                elif key in (65362, ord("w"), ord("W")):        # ↑ / W : tilt +
+                    _arm_jog_step(arm_controller, 0.0, +jog_step_deg)
+                elif key in (65364, ord("s"), ord("S")):        # ↓ / S : tilt -
+                    _arm_jog_step(arm_controller, 0.0, -jog_step_deg)
+                elif key in (ord("]"), ord("+"), ord("=")):
+                    _ji = jog_step_choices.index(jog_step_deg) if jog_step_deg in jog_step_choices else 2
+                    jog_step_deg = jog_step_choices[min(len(jog_step_choices) - 1, _ji + 1)]
+                    print(f"[JOG] step -> {jog_step_deg:.2f} deg")
+                elif key in (ord("["), ord("-"), ord("_")):
+                    _ji = jog_step_choices.index(jog_step_deg) if jog_step_deg in jog_step_choices else 2
+                    jog_step_deg = jog_step_choices[max(0, _ji - 1)]
+                    print(f"[JOG] step -> {jog_step_deg:.2f} deg")
+                elif key in (ord("x"), ord("X")):
+                    _arm_jog_unlock(arm_controller)
+                elif key in (ord("z"), ord("Z")):
+                    _arm_jog_set_home(arm_controller)   # ตั้งตำแหน่งนี้เป็น home ใหม่ (re-zero)
+                elif key in (ord("h"), ord("H")):
+                    _manual_arm_go_home(arm_controller, arm_mode_manager)
 
     except KeyboardInterrupt:
         pass
