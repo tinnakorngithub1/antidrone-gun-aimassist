@@ -75,6 +75,9 @@ class VirtualDroneTarget:
         # ความเร็ว/เร่ง เชิงมุม (deg/s, deg/s²) = linear / range
         self.max_ang_speed = math.degrees(self.max_speed_ms / max(1.0, self.range_m))
         self.max_ang_accel = math.degrees(self.max_accel_ms2 / max(1.0, self.range_m))
+        # โดรนไกล = ภาพเล็ก = YOLO conf ต่ำ (สมจริง) — ระยะกำหนด conf ของ detection ที่ฉีด
+        if range_m:
+            self.det_conf = self._conf_from_box(self.box_deg)
 
         # bearing state (deg) ในโลกจริง
         self.pan = 0.0
@@ -102,6 +105,20 @@ class VirtualDroneTarget:
         # deterministic RNG (การบินอิสระ — ตัวเล็ง/ยิงไม่เห็น state นี้ ห้ามโกง)
         self._rng_s = seed & 0x7FFFFFFF
         self._flight_rng = (seed * 2654435761) & 0x7FFFFFFF  # แยก RNG การบินออกจาก detection
+
+    @staticmethod
+    def _conf_from_box(box_deg):
+        """conf ของ detection ตามขนาดเชิงมุม: ใกล้(ใหญ่)=สูง, ไกล(เล็ก)=ต่ำ (สมจริง).
+        อ้างอิง: 50m≈0.34°→0.76, 100m≈0.17°→0.46, 150m≈0.11°→0.35, 200m≈0.086°→0.30."""
+        return max(0.15, min(0.85, 0.15 + box_deg * 1.8))
+
+    def set_range(self, range_m):
+        """เปลี่ยนระยะโดรน runtime → คำนวณ ขนาด/ความเร็วเชิงมุม/conf ใหม่ (เทสต์หลายระยะ)."""
+        self.range_m = float(max(1.0, range_m))
+        self.box_deg = math.degrees(math.atan2(self.target_size_m, self.range_m))
+        self.max_ang_speed = math.degrees(self.max_speed_ms / self.range_m)
+        self.max_ang_accel = math.degrees(self.max_accel_ms2 / self.range_m)
+        self.det_conf = self._conf_from_box(self.box_deg)
 
     # ---- RNG ----
     def _rand(self):
