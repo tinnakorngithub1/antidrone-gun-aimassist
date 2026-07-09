@@ -21,6 +21,8 @@ Gun Aim Assist Vector: ระบบช่วยเล็งกล้องติ
                  Z ตั้ง home ตรงนี้ (re-zero, สำหรับแขนไม่มี limit switch), H กลับ home, J/Esc ออก)
   B           : เปิด/ปิด online residual bias learning — AUTO mode only
                 (HUD แสดง BIAS:ON/OFF(B) + จำนวน cell ที่มีข้อมูล)
+  Y           : สอน aim trim จากผลยิง LOCK/sim ที่ผ่านมา (least-squares หา offset, cap step,
+                persist calibration_data/<cam>_fire_tune.json). sim = ครู ground-truth ที่แม่นสุด
 
 --- Joystick Controls ---
   Joystick axis  : ควบคุมแขน (MANUAL/LOCK)
@@ -477,7 +479,8 @@ GRAVITY_MS2 = 9.80665
 LOCK_FIRE_READY_FRAMES = 2         # ต้องเข้าเกณฑ์ต่อเนื่องกี่เฟรมถึงขึ้น SHOOT (ต่ำ=ยิงเร็ว)
 # Effective hit radius (เมตร ที่ระยะเป้า) = ขนาดโดรน + การกระจายกระสุน/burst — ยิงได้จริงในทางปฏิบัติ
 # แปลงเป็นองศาตามระยะ: hit_radius_deg = atan2(HIT_RADIUS_M, range)
-LOCK_FIRE_HIT_RADIUS_M = 1.2       # รัศมีปะทะใช้งานจริง (m) — 1.2m@150m ≈ 0.46°
+LOCK_FIRE_HIT_RADIUS_M = 0.35      # รัศมีปะทะ (m) — 0.35m ≈ เข้าตัวโดรน 0.3m จริง (เดิม 1.2m หลวมเกิน
+                                   #   = ทรงกลมกว้างกว่าตัวโดรน 4×; slug ต้องเข้าตัว ไม่ใช่เฉียด 1.2m)
 LOCK_FIRE_READY_MIN_RADIUS_DEG = 0.15  # ขั้นต่ำ (เป้าใกล้มากไม่ให้ผ่อนเกิน)
 # Fire-safe zone (ความปลอดภัย): ยิงได้เฉพาะเมื่อ 'ทิศเล็ง' อยู่ในโคนกลาง — กันยิงทิศอันตราย
 # ⚠️ ปิดตามคำสั่งผู้ใช้ (ทดสอบยิงโดรนจริง) — ยิงได้ทุกมุม, ลิมิตแขน ±63°/±33° ยังคุมมุมเล็งอยู่
@@ -2904,6 +2907,131 @@ def _get_bias_learner() -> Optional["ResidualBiasLearner"]:
     return _residual_bias_learner
 
 
+# =============================================================================
+# FireTuneLearner — สอน 'aim trim' (pan/tilt offset) จากผลยิงจริง/sim ที่ผ่านมา
+# แนวคิด: ทุกนัดที่ยิง เก็บ error เวกเตอร์ (ลำกล้อง − เป้า ณ กระสุนถึง) เทียบทิศเป้าวิ่ง
+#   - นัดเป้านิ่ง (v เล็ก): error ทั้งเวกเตอร์ = static offset ตรง ๆ → 2 สมการ (แกน pan, แกน tilt)
+#   - นัดเป้าวิ่ง: ใช้เฉพาะองค์ประกอบ cross-track (ตั้งฉากทิศวิ่ง) = static offset ที่ 'ไม่ปน lead error'
+# กด 'y' (teach) → แก้สมการ least-squares หา offset ที่อธิบายทุกนัด แล้วปรับ trim (cap step กันเพี้ยน)
+# trim ถูก 'บวกเข้า aim' ใน _tick_lock และ persist ที่ calibration_data/<cam>_fire_tune.json
+# ปลอดภัย: ไม่แตะ muzzle/lead (ตาม scope ที่เลือก) — แก้แค่ offset เชิงเรขาคณิต (เหมือน crosshair trim)
+# =============================================================================
+FIRE_TUNE_MIN_SAMPLES = 5          # ต้องมีอย่างน้อยกี่นัดถึงจะยอมสอน
+FIRE_TUNE_MOVING_VMAG_DEG_S = 2.0  # v เกินนี้ = เป้าวิ่ง (ใช้ cross เท่านั้น); ต่ำกว่า = ถือว่านิ่ง
+FIRE_TUNE_MAX_STEP_DEG = 1.0       # ปรับ trim ได้สูงสุดกี่องศาต่อการกดสอน 1 ครั้ง (กันกระโดด)
+FIRE_TUNE_MAX_TRIM_DEG = 5.0       # เพดาน trim สะสมรวม (safety clamp — ห้ามเลื่อนศูนย์เกินนี้)
+
+
+class FireTuneLearner:
+    def __init__(self, camera_name: str):
+        cam = (camera_name or "cam4").strip()
+        self._path = Path(__file__).resolve().parent / "calibration_data" / f"{cam}_fire_tune.json"
+        self.trim_pan = 0.0
+        self.trim_tilt = 0.0
+        self.n_updates = 0
+        self._samples = []   # list of (ax, ay, val): สมการ axis·offset = val
+        self.load()
+
+    def load(self):
+        try:
+            if self._path.is_file():
+                with open(self._path) as f:
+                    d = json.load(f)
+                self.trim_pan = float(d.get("trim_pan", 0.0))
+                self.trim_tilt = float(d.get("trim_tilt", 0.0))
+                self.n_updates = int(d.get("n_updates", 0))
+                print(f"[FireTune] Loaded trim=({self.trim_pan:+.2f},{self.trim_tilt:+.2f})deg "
+                      f"from {self._path.name} (updates={self.n_updates})", flush=True)
+        except Exception as e:
+            print(f"[FireTune] load error: {e}")
+
+    def save(self):
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._path, "w") as f:
+                json.dump({
+                    "trim_pan": self.trim_pan,
+                    "trim_tilt": self.trim_tilt,
+                    "n_updates": self.n_updates,
+                }, f, indent=2)
+        except Exception as e:
+            print(f"[FireTune] save error: {e}")
+
+    def get_trim(self) -> Tuple[float, float]:
+        return self.trim_pan, self.trim_tilt
+
+    def add_sample(self, err_pan: float, err_tilt: float,
+                   v_pan: float, v_tilt: float, stable: bool = True) -> None:
+        """เก็บ error 1 นัด. err = ลำกล้อง(ตอนยิง) − เป้า(ณ กระสุนถึง). stable=นัดที่ track นิ่งพอ."""
+        if not stable:
+            return
+        vmag = math.hypot(v_pan, v_tilt)
+        if vmag < FIRE_TUNE_MOVING_VMAG_DEG_S:
+            # เป้านิ่ง → error ทั้งเวกเตอร์คือ static offset: 2 สมการ แกนตั้งฉากกัน
+            self._samples.append((1.0, 0.0, err_pan))
+            self._samples.append((0.0, 1.0, err_tilt))
+        else:
+            # เป้าวิ่ง → ใช้เฉพาะ cross-track (ตั้งฉากทิศวิ่ง) กันปน lead/TOF error
+            ux, uy = v_pan / vmag, v_tilt / vmag
+            ax, ay = -uy, ux                       # cross-axis (ซ้ายมือของทิศวิ่ง)
+            val = err_pan * ax + err_tilt * ay
+            self._samples.append((ax, ay, val))
+        if len(self._samples) > 400:
+            self._samples = self._samples[-400:]
+
+    def sample_count(self) -> int:
+        return len(self._samples)
+
+    def teach(self) -> Optional[dict]:
+        """แก้ least-squares: หา offset (ox,oy) ที่อธิบายทุกสมการ axis·offset=val ดีสุด
+        แล้วปรับ trim -= offset (cap step). คืน dict สรุป หรือ None ถ้าข้อมูลไม่พอ/ไม่ observable."""
+        n = len(self._samples)
+        if n < FIRE_TUNE_MIN_SAMPLES:
+            print(f"[FireTune] ยังสอนไม่ได้ — มี {n} สมการ ต้องการ ≥{FIRE_TUNE_MIN_SAMPLES} "
+                  f"(ยิงในโหมด LOCK/sim เพิ่ม)", flush=True)
+            return None
+        A = np.zeros((2, 2)); b = np.zeros(2)
+        for ax, ay, val in self._samples:
+            v = np.array([ax, ay])
+            A += np.outer(v, v)
+            b += v * val
+        det = A[0, 0] * A[1, 1] - A[0, 1] * A[1, 0]
+        if abs(det) < 1e-6:
+            print("[FireTune] สอนไม่ได้ — ทิศเป้าไม่หลากพอ (offset ไม่ observable ทั้ง 2 แกน). "
+                  "ลองยิงเป้าที่วิ่งหลายทิศ หรือมีนัดเป้านิ่งบ้าง", flush=True)
+            return None
+        ox = (A[1, 1] * b[0] - A[0, 1] * b[1]) / det
+        oy = (A[0, 0] * b[1] - A[0, 1] * b[0]) / det
+        # residual RMS ก่อนแก้ (ประเมินความสอดคล้องของข้อมูล)
+        res = [ (ax * ox + ay * oy - val) for ax, ay, val in self._samples ]
+        rms = float(np.sqrt(np.mean(np.square(res)))) if res else 0.0
+        # แก้ trim ลบ residual offset ออก + cap ระยะก้าวต่อครั้ง
+        d_pan, d_tilt = -ox, -oy
+        dmag = math.hypot(d_pan, d_tilt)
+        capped = False
+        if dmag > FIRE_TUNE_MAX_STEP_DEG and dmag > 1e-9:
+            s = FIRE_TUNE_MAX_STEP_DEG / dmag
+            d_pan *= s; d_tilt *= s; capped = True
+        new_pan = float(np.clip(self.trim_pan + d_pan, -FIRE_TUNE_MAX_TRIM_DEG, FIRE_TUNE_MAX_TRIM_DEG))
+        new_tilt = float(np.clip(self.trim_tilt + d_tilt, -FIRE_TUNE_MAX_TRIM_DEG, FIRE_TUNE_MAX_TRIM_DEG))
+        old = (self.trim_pan, self.trim_tilt)
+        self.trim_pan, self.trim_tilt = new_pan, new_tilt
+        self.n_updates += 1
+        self.save()
+        self._samples = []   # ใช้ข้อมูลชุดนี้แล้ว เคลียร์กันนับซ้ำ
+        summary = {
+            "n": n, "offset": (ox, oy), "delta": (d_pan, d_tilt), "capped": capped,
+            "trim_old": old, "trim_new": (new_pan, new_tilt), "rms_deg": rms,
+        }
+        print(f"[FireTune] ✅ สอนแล้ว (n={n}): offset=({ox:+.2f},{oy:+.2f}) rms={rms:.2f}° "
+              f"→ trim ({old[0]:+.2f},{old[1]:+.2f}) → ({new_pan:+.2f},{new_tilt:+.2f})°"
+              f"{' [capped]' if capped else ''}  saved.", flush=True)
+        return summary
+
+
+_fire_tune_learner: Optional["FireTuneLearner"] = None
+
+
 def _cam4_crosshair_trim_deg(ctx: Dict[str, Any]) -> Tuple[float, float]:
     """Pan/tilt deg to align cam8 absolute target with reticle vs frame geometric center (px/deg like bias)."""
     if not CAM8_CROSSHAIR_TRIM_ENABLED:
@@ -3217,6 +3345,10 @@ def _tick_lock(ctx):
         aim_tilt += _flead_t
         fire_lead_deg = math.hypot(_flead_p, _flead_t)
 
+    # learned fire trim (offset เชิงเรขาคณิตที่สอนจากผลยิงก่อนหน้า) — บวกเข้าจุดเล็ง
+    aim_pan += ctx.get("fire_trim_pan", 0.0)
+    aim_tilt += ctx.get("fire_trim_tilt", 0.0)
+
     pan_cur = getattr(arm_controller, "pos_x", 0.0)
     tilt_cur = getattr(arm_controller, "pos_y", 0.0)
     if SWAP_PAN_TILT:  # config ปัจจุบัน CAM4_ARM_SWAP_PAN_TILT=False (ยืนยันแล้ว) — คง branch ให้ตรง acquire
@@ -3504,6 +3636,10 @@ def main():
         calib_json_path=_CAM8_CALIB_FILE if (_CAM8_CALIB_FILE is not None and _CAM8_CALIB_FILE.exists()) else None
     )
 
+    # Init fire-tune learner (สอน aim trim จากผลยิง LOCK/sim — persist ข้าม session)
+    global _fire_tune_learner
+    _fire_tune_learner = FireTuneLearner(camera_name)
+
     cam = build_camera_from_config(camera_name)
 
     yolo_plan = _yolo_aim_engine_plan()
@@ -3637,13 +3773,15 @@ def main():
     lock_expected_miss_deg = None
     lock_pipe_lat = 0.0
     lock_fire_t_flight = 0.0
+    lock_fire_lead_deg = 0.0
     fire_authorized = False     # ผู้ใช้กดยิงใน LOCK = อนุญาต (latch) → โปรแกรมลั่นไกเองตอน ready
     prev_fire_pressed = False   # ตรวจ edge การกดปุ่มยิง (กดครั้งเดียว = toggle)
     lock_shots_fired = 0
     lock_hits = 0
     lock_misses = 0
-    pending_impacts = []        # [(impact_time, barrel_pan, barrel_tilt, t_flight)] รอคำนวณปะทะ
+    pending_impacts = []        # [(impact_time, barrel_pan, barrel_tilt, t_flight, v_pan, v_tilt, lead_deg)] รอคำนวณปะทะ
     hit_flash = None            # (text, color, until_time) โชว์ผล HIT/MISS ตัวใหญ่
+    _impact_log = None          # ไฟล์ log จุดกระสุนตกเทียบเป้า (โหมดจริง) — เปิด lazy ตอนยิงนัดแรก
 
     # edge detection สำหรับปุ่ม 12 สลับโหมดความเร็วจอยสติ๊ก (ช้า/กลาง/สูง)
     prev_sensitivity_cycle_pressed = False
@@ -4080,6 +4218,7 @@ def main():
                 )
 
             # โดรนเสมือน: ฉีดลงเฟรมสด ก่อนส่งเข้า YOLO (ใช้มุมแขนจริง → ego-motion สมจริง)
+            _vt_px = _vt_py = None; _vt_infov = False   # พิกัดโดรน sim บนจอ (ใช้วาด miss line)
             if _vt_enabled and not network_loss_mode:
                 if virtual_target is None and px_per_deg_x is not None and abs(px_per_deg_x) > 1e-6:
                     virtual_target = VirtualDroneTarget(
@@ -4100,7 +4239,7 @@ def main():
                     print(f"[SIMDRONE] range={virtual_target.range_m:.0f}m box={virtual_target.box_deg:.3f}deg "
                           f"max_ang_speed={virtual_target.max_ang_speed:.1f}deg/s pattern={virtual_target.pattern}", flush=True)
                 if virtual_target is not None:
-                    virtual_target.on_frame(
+                    _vt_px, _vt_py, _vt_infov = virtual_target.on_frame(
                         frame,
                         float(getattr(arm_controller, "pos_x", 0.0)) if arm_controller is not None else 0.0,
                         float(getattr(arm_controller, "pos_y", 0.0)) if arm_controller is not None else 0.0,
@@ -4481,6 +4620,9 @@ def main():
                         ) or config.effective_range_m,
                         "muzzle_velocity_ms": config.muzzle_velocity_ms,
                         "target_size_m": config.target_size_m,
+                        # learned aim trim (สอนด้วยปุ่ม y จากผลยิงก่อนหน้า)
+                        "fire_trim_pan": (_fire_tune_learner.trim_pan if _fire_tune_learner else 0.0),
+                        "fire_trim_tilt": (_fire_tune_learner.trim_tilt if _fire_tune_learner else 0.0),
                     }
                     if app_mode == "jog":
                         pass  # JOG: ขับแขนด้วยคีย์บอร์ดเท่านั้น — ข้าม auto/lock/manual tick
@@ -4518,6 +4660,7 @@ def main():
                     lock_expected_miss_deg = _ctx.get("lock_expected_miss_deg")
                     lock_pipe_lat = _ctx.get("lock_pipe_lat", 0.0)
                     lock_fire_t_flight = _ctx.get("lock_fire_t_flight", 0.0)
+                    lock_fire_lead_deg = _ctx.get("lock_fire_lead_deg", 0.0)
 
                 now = time.time()
                 if ready_to_fire and SOUND_ON_READY:
@@ -4601,6 +4744,30 @@ def main():
                     _fh, _fw = frame.shape[:2]
                     _fs = max(1.2, _fw / 900.0)   # font scale ตามความละเอียด
                     _th = max(2, int(_fs * 2))
+                    # --- HIT ZONE ring: รัศมี = hit_radius × ppd รอบศูนย์เล็ง (= แนวลำกล้อง).
+                    # โดรนอยู่ในวง ⟺ angular miss ≤ hit_radius ⟺ นับ HIT. ทำให้เห็นว่าทำไมโดน/ไม่โดน
+                    if lock_hit_radius_deg is not None and px_per_deg_x:
+                        _hz_r = int(abs(lock_hit_radius_deg * px_per_deg_x))
+                        if _hz_r > 2:
+                            cv2.circle(frame, (int(cx_frame), int(cy_frame)), _hz_r,
+                                       (0, 255, 255), 2, cv2.LINE_AA)
+                            cv2.putText(frame, f"HIT ZONE {lock_hit_radius_deg:.2f}deg",
+                                        (int(cx_frame) - _hz_r, int(cy_frame) - _hz_r - 6),
+                                        cv2.FONT_HERSHEY_SIMPLEX, _fs * 0.4, (0, 255, 255),
+                                        max(1, _th // 2), cv2.LINE_AA)
+                            # เส้น + ค่ามุม miss จริง จากศูนย์เล็งไปตัวโดรน sim (in/out ของวง = โดน/พลาด)
+                            if _vt_px is not None and _vt_infov and px_per_deg_x and px_per_deg_y:
+                                _mdx = (_vt_px - cx_frame) / px_per_deg_x
+                                _mdy = (_vt_py - cy_frame) / px_per_deg_y
+                                _mdeg = math.hypot(_mdx, _mdy)
+                                _inzone = _mdeg <= lock_hit_radius_deg
+                                _mcol = (0, 255, 0) if _inzone else (0, 0, 255)
+                                cv2.line(frame, (int(cx_frame), int(cy_frame)),
+                                         (int(_vt_px), int(_vt_py)), _mcol, 2, cv2.LINE_AA)
+                                cv2.putText(frame, f"miss {_mdeg:.2f}deg {'IN' if _inzone else 'OUT'}",
+                                            (int(_vt_px) + 8, int(_vt_py)),
+                                            cv2.FONT_HERSHEY_SIMPLEX, _fs * 0.45, _mcol,
+                                            max(1, _th // 2), cv2.LINE_AA)
                     if lock_fire_ready:
                         _flash = int(time.time() * 4) % 2 == 0   # กะพริบ ~2Hz
                         _col = (0, 255, 0) if _flash else (0, 180, 0)
@@ -4987,7 +5154,12 @@ def main():
                     _bpan = float(getattr(arm_controller, "pos_x", 0.0)) if arm_controller else 0.0
                     _btilt = float(getattr(arm_controller, "pos_y", 0.0)) if arm_controller else 0.0
                     _tof = max(0.005, lock_fire_t_flight)
-                    pending_impacts.append((now_fire + _tof, _bpan, _btilt, _tof))
+                    # เก็บ velocity เป้า(deg/s) + lead ที่ใส่ ณ ยิง → ใช้แยก along/cross-track ตอนปะทะ
+                    _vp_fire, _vt_fire = (
+                        lock_kalman.get_velocity_raw() if lock_kalman is not None else (0.0, 0.0)
+                    )
+                    pending_impacts.append(
+                        (now_fire + _tof, _bpan, _btilt, _tof, _vp_fire, _vt_fire, lock_fire_lead_deg))
                     _hr = lock_hit_radius_deg if lock_hit_radius_deg is not None else 0.0
                     _em = lock_expected_miss_deg if lock_expected_miss_deg is not None else 0.0
                     print(f"[FIRE] SHOT #{lock_shots_fired} — expected_miss={_em:.2f}deg <= hit_r={_hr:.2f}deg "
@@ -4997,11 +5169,16 @@ def main():
                 if pending_impacts:
                     _now_imp = time.time()
                     _still = []
-                    for (imp_t, bpan, btilt, tof) in pending_impacts:
+                    for (imp_t, bpan, btilt, tof, vp_fire, vt_fire, lead_fire) in pending_impacts:
                         if _now_imp >= imp_t:
                             if virtual_target is not None:
                                 _miss = math.hypot(bpan - virtual_target.pan, btilt - virtual_target.tilt)
                                 _hr = lock_hit_radius_deg if lock_hit_radius_deg is not None else 0.5
+                                # sim มี ground-truth → ครูที่แม่นสุด: ป้อน error เข้า FireTune ก่อน explode
+                                if _fire_tune_learner is not None:
+                                    _fire_tune_learner.add_sample(
+                                        bpan - virtual_target.pan, btilt - virtual_target.tilt,
+                                        vp_fire, vt_fire, stable=True)
                                 if _miss <= _hr:
                                     lock_hits += 1
                                     hit_flash = ("HIT! LOCK RELEASED", (0, 255, 0), _now_imp + 1.5)
@@ -5032,8 +5209,57 @@ def main():
                                     hit_flash = (f"MISS {_miss:.1f}°", (0, 0, 255), _now_imp + 1.2)
                                     print(f"[IMPACT] ❌ MISS miss={_miss:.2f}° > {_hr:.2f}° "
                                           f"({lock_hits}/{lock_shots_fired})", flush=True)
+                            else:
+                                # โหมดจริง: ไม่มี ground truth → เทียบทิศลำกล้อง(ตอนยิง) กับทิศเป้าที่ track ได้
+                                # ณ เวลากระสุนถึง = วัดว่า 'เล็ง+นำเป้า' ลงตรงที่เป้าไปจริงไหม (จูน lead/ballistics/offset)
+                                if last_target_pan is not None and last_target_tilt is not None:
+                                    # miss vector = ลำกล้อง(ตอนยิง) − เป้า(ณ กระสุนถึง). ในโหมดจริง
+                                    # last_target_* คือทิศเป้าล่าสุดที่ track ได้ (≈ ตำแหน่งเป้า ณ ปะทะ)
+                                    _err_pan = bpan - last_target_pan
+                                    _err_tilt = btilt - last_target_tilt
+                                    _aim_err = math.hypot(_err_pan, _err_tilt)
+                                    _hr = lock_hit_radius_deg if lock_hit_radius_deg is not None else 0.5
+                                    _rng = tof * float(getattr(config, "muzzle_velocity_ms", 900.0))
+                                    _tag = "on-target" if _aim_err <= _hr else "off"
+                                    # แยก miss เป็น along-track (ตามทิศเป้าวิ่ง) และ cross-track (ตั้งฉาก):
+                                    #   along-track มี bias คงที่ → lead/TOF ผิด (จูน muzzle_velocity_ms / LEAD_EXTRA)
+                                    #     along>0 = เล็งนำหน้าไป (lead มากไป) ; along<0 = ตกหลังเป้า (lead น้อยไป)
+                                    #   cross-track มี bias คงที่ → aim offset/px-deg/crosshair (จูน trim/offset)
+                                    _vmag = math.hypot(vp_fire, vt_fire)
+                                    if _vmag > 1e-6:
+                                        _ux, _uy = vp_fire / _vmag, vt_fire / _vmag
+                                        _along = _err_pan * _ux + _err_tilt * _uy
+                                        _cross = _err_pan * (-_uy) + _err_tilt * _ux
+                                    else:
+                                        _along, _cross = 0.0, 0.0   # เป้านิ่ง → แยกทิศไม่ได้
+                                    # ป้อนเข้า FireTune (โหมดจริง): teacher = ทิศเป้าที่ track ได้ ณ ปะทะ
+                                    if _fire_tune_learner is not None:
+                                        _fire_tune_learner.add_sample(_err_pan, _err_tilt, vp_fire, vt_fire,
+                                                                      stable=(not lock_csrt_lost))
+                                    print(f"[IMPACT] aim_err={_aim_err:.2f}deg ({_tag}, hit_r={_hr:.2f}) "
+                                          f"along={_along:+.2f} cross={_cross:+.2f} "
+                                          f"barrel=({bpan:+.1f},{btilt:+.1f}) "
+                                          f"target@impact=({last_target_pan:+.1f},{last_target_tilt:+.1f}) "
+                                          f"vel={_vmag:.1f}d/s lead={lead_fire:.2f} "
+                                          f"tof={tof*1000:.0f}ms range~{_rng:.0f}m", flush=True)
+                                    hit_flash = (f"aim {_aim_err:.1f}deg", (0, 200, 255), _now_imp + 1.2)
+                                    if _impact_log is None:
+                                        try:
+                                            _impact_log = open(Path(__file__).resolve().parent / "impact_log.csv", "a")
+                                            _impact_log.write("# t_iso,barrel_pan,barrel_tilt,tgt_pan,tgt_tilt,"
+                                                              "err_pan,err_tilt,aim_err_deg,along_deg,cross_deg,"
+                                                              "vel_deg_s,lead_deg,hit_r_deg,tof_ms,range_m\n")
+                                        except Exception:
+                                            _impact_log = None
+                                    if _impact_log is not None:
+                                        _impact_log.write(
+                                            f"{datetime.datetime.now().isoformat(timespec='milliseconds')},"
+                                            f"{bpan:.2f},{btilt:.2f},{last_target_pan:.2f},{last_target_tilt:.2f},"
+                                            f"{_err_pan:.3f},{_err_tilt:.3f},{_aim_err:.3f},{_along:.3f},{_cross:.3f},"
+                                            f"{_vmag:.2f},{lead_fire:.3f},{_hr:.3f},{tof * 1000:.0f},{_rng:.0f}\n")
+                                        _impact_log.flush()
                         else:
-                            _still.append((imp_t, bpan, btilt, tof))
+                            _still.append((imp_t, bpan, btilt, tof, vp_fire, vt_fire, lead_fire))
                     pending_impacts = _still
 
                 # ควบคุมแขนด้วย joystick เฉพาะเมื่ออยู่โหมด MANUAL (ยกเว้นระหว่าง JOG คีย์บอร์ด)
@@ -5448,6 +5674,13 @@ def main():
                     _reset_target_tracking_state()
                 elif key in (ord("t"), ord("T")):
                     _apply_detection_engine_toggle()
+                # ปุ่ม Y: สอน aim trim จากผลยิง LOCK/sim ที่ผ่านมา (persist ข้าม session)
+                elif key in (ord("y"), ord("Y")):
+                    if _fire_tune_learner is None:
+                        print("[FireTune] ยังไม่พร้อม (learner ยังไม่ init)")
+                    else:
+                        print(f"[FireTune] teach จาก {_fire_tune_learner.sample_count()} สมการยิงล่าสุด...")
+                        _fire_tune_learner.teach()
                 # ปุ่ม I: เปิด/ปิดโดรนจำลอง (SIMULATION) — default ปิด (โหมดจริง)
                 elif key in (ord("i"), ord("I")):
                     if VirtualDroneTarget is None:
@@ -5680,6 +5913,11 @@ def main():
                 _residual_bias_learner.save(force=True)
         except Exception as _e:
             print(f"[BiasLearner] shutdown save error: {_e}")
+        try:
+            if _fire_tune_learner is not None:
+                _fire_tune_learner.save()
+        except Exception as _e:
+            print(f"[FireTune] shutdown save error: {_e}")
         # --- cleanup: disconnect arm, stop YOLO thread, stop cue receiver, release camera ---
         if arm_controller is not None:
             try:
