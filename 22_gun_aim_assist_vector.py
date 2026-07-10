@@ -490,7 +490,24 @@ LOCK_FIRE_SAFE_TILT_DEG = 25.0     # |target_tilt| ต้อง ≤ ค่าน
 LOCK_FIRE_PRED_UNCERT_K = 1.5      # ตัวคูณความไม่แน่นอน = prediction_residual_rate·horizon·K
                                    # จูนใน sim: 1.5 = ยิงถี่ที่ ω≤8 (hit 88-100%), ปฏิเสธที่ ω≥15
 LOCK_FIRE_NOISE_FLOOR_DEG = 0.05   # พื้น uncertainty จาก detection noise (deg)
+# --- Predictive-intercept firing (ดักยิงล่วงหน้า) ---
+# doctrine: กดยิง = 'ตั้งใจยิง' (authorize) ไม่ยิงทันที → lock ตามเป้าต่อ + คำนวณจุด intercept realtime
+#   จนกว่าจะ 'มั่นใจว่าทำนายแม่นพอจะโดน' (confidence gate ด้านล่าง) → กระโดดไปจุดนั้น (snap) แล้วยิง = แม่น
+#   เป้า juke/คาดเดายาก → ไม่มั่นใจ → ตามต่อ ไม่ยิง (กันยิงพลาด). impact_log/HUD รายงาน miss จริงให้จูน
+LOCK_FIRE_MAX_RESID_DEG_S = 3.0    # เป้า juke เกินนี้ (deg/s prediction residual) = คาดเดายาก → ไม่ยิง รอจังหวะนิ่ง
+# Snap-and-shoot: เมื่อ authorized + มั่นใจ → 'กระโดดตรงไป intercept → ยิง' (ไม่รอ throttled approach)
+# ใช้เมื่อ barrel อยู่ห่างจุดดักไม่เกิน SNAP_MAX (จุด intercept อยู่ใกล้ตำแหน่งที่ track อยู่แล้ว)
+LOCK_FIRE_SNAP_AND_SHOOT = True    # authorized + มั่นใจ + ใกล้พอ → move_absolute กระโดดไป intercept แล้วยิง
+LOCK_FIRE_SNAP_MAX_DEG = 5.0       # barrel ห่างจุด intercept ≤ ค่านี้ = commit กระโดด (ไกลกว่านี้ = ค่อย ๆ เข้าก่อน)
+# Confidence gate: กดยิง = 'ตั้งใจยิง' (authorize) ไม่ยิงทันที — track ต่อจนกว่าจะ 'มั่นใจว่าทำนายแม่นพอจะโดน'
+#   มั่นใจ = ความไม่แน่นอนของจุด intercept ที่ทำนาย (uncert จาก resid/accel) ≤ hit_radius × K ต่อเนื่องหลายเฟรม
+#   เป้า juke/คาดเดายาก → uncert สูง → ไม่มั่นใจ → lock ตามต่อ ไม่ยิง (รอจังหวะที่ทำนายได้แม่น)
+LOCK_FIRE_CONFIDENCE_K = 0.7       # ยอมให้ uncert ของจุดทำนาย ≤ hit_radius × K ถึงจะยิง — <1 = predicted miss
+                                   #   ต้องอยู่ 'ในรัศมีโดนอย่างมีมาร์จิน' (เดิม 1.5 = ยอมพลาดตั้งแต่ต้น → miss บ่อย)
+LOCK_FIRE_CONFIDENT_FRAMES = 4     # ต้องมั่นใจต่อเนื่องกี่เฟรม (มากขึ้น = ต้องนิ่งจริง ไม่ใช่ noise แวบเดียว)
+LOCK_FIRE_CURVATURE_K = 0.5        # โทษเป้าที่กำลังเลี้ยว: uncert += K·accel·horizon² (เดิม 0.15 = ประเมินต่ำ)
 _lock_fire_ready_count = [0]       # นับเฟรมที่เข้าเกณฑ์ยิงโดนต่อเนื่อง
+_lock_confident_count = [0]        # นับเฟรมที่ 'มั่นใจว่าทำนายแม่นพอจะโดน' ต่อเนื่อง
 _lock_vel_hist = [0.0, 0.0, 0.0]   # [vpan, vtilt, t] รอบก่อน — ประเมินความเร่งเป้า
 _lock_accel_ema = [0.0, 0.0]       # ความเร่งเป้า (deg/s²) smoothed สำหรับ constant-accel lead
 _lock_meas_prev = [None]           # [b_pan,b_tilt,t,vpan,vtilt] measurement ก่อน — วัด prediction residual
@@ -3329,10 +3346,15 @@ def _tick_lock(ctx):
         # เป้าหลุด/นิ่ง → bounded coast (decay) กัน overshoot ตอนเป้าเลี้ยว (validate 31/32)
         aim_pan, aim_tilt = lock_kalman.predict_ahead(coast_elapsed, decay_tau=KALMAN_COAST_DECAY_TAU)
 
-    # Firing solution: เล็งดักหน้าเผื่อเวลากระสุนบิน → กดยิงแล้วโดนโดรน (อยู่บนตำแหน่งปัจจุบัน = aim)
+    # Firing solution: จุดยิงจริง = 'ตำแหน่งปัจจุบันจริง (base) + lead กระสุนบิน' — ไม่รวม actuation EXTRA
+    #   (EXTRA เป็น lead ให้แขน 'ตามทัน' ตอน track เท่านั้น; ตอน snap วางลำกล้องตรงจุดแล้วยิงทันที ไม่มี lag
+    #    → ถ้าเอา EXTRA มาใส่จุดยิงด้วย = over-lead v×EXTRA พลาดไปข้างหน้า โดยเฉพาะเป้าเร็ว)
     fire_t_flight = 0.0
     fire_lead_deg = 0.0
     fire_range_m = ctx.get("lock_range_m")
+    _base_pan = base_pan if _lead_active else aim_pan     # ตำแหน่งจริงตอนนี้ (coast: ใช้ aim)
+    _base_tilt = base_tilt if _lead_active else aim_tilt
+    _flead_p = _flead_t = 0.0
     if LOCK_FIRE_SOLUTION_ENABLED and _lead_active:
         _vpan, _vtilt = lock_kalman.get_velocity_raw()
         _muzzle = float(ctx.get("muzzle_velocity_ms", 900.0) or 900.0)
@@ -3341,23 +3363,33 @@ def _tick_lock(ctx):
             drop_comp=LOCK_FIRE_DROP_COMP, tilt_up_sign=LOCK_FIRE_TILT_UP_SIGN,
             max_lead_deg=LOCK_FIRE_MAX_LEAD_DEG,
         )
-        aim_pan += _flead_p
+        aim_pan += _flead_p      # tracking aim (มี EXTRA) — ใช้ขับแขนตามต่อเนื่อง
         aim_tilt += _flead_t
         fire_lead_deg = math.hypot(_flead_p, _flead_t)
 
-    # learned fire trim (offset เชิงเรขาคณิตที่สอนจากผลยิงก่อนหน้า) — บวกเข้าจุดเล็ง
-    aim_pan += ctx.get("fire_trim_pan", 0.0)
-    aim_tilt += ctx.get("fire_trim_tilt", 0.0)
+    # learned fire trim (offset เชิงเรขาคณิต) — บวกเข้าทั้งจุด track และจุดยิง
+    _trim_p = ctx.get("fire_trim_pan", 0.0)
+    _trim_t = ctx.get("fire_trim_tilt", 0.0)
+    aim_pan += _trim_p
+    aim_tilt += _trim_t
+    # จุดยิงจริง (snap/readiness/impact) = base + firing_lead + trim  (ไม่มี EXTRA)
+    fire_aim_pan = _base_pan + _flead_p + _trim_p
+    fire_aim_tilt = _base_tilt + _flead_t + _trim_t
 
     pan_cur = getattr(arm_controller, "pos_x", 0.0)
     tilt_cur = getattr(arm_controller, "pos_y", 0.0)
     if SWAP_PAN_TILT:  # config ปัจจุบัน CAM4_ARM_SWAP_PAN_TILT=False (ยืนยันแล้ว) — คง branch ให้ตรง acquire
-        target_pan = float(np.clip(aim_pan, y_lo, y_hi))
+        target_pan = float(np.clip(aim_pan, y_lo, y_hi))          # tracking drive
         target_tilt = float(np.clip(aim_tilt, x_lo, x_hi))
+        fire_target_pan = float(np.clip(fire_aim_pan, y_lo, y_hi))  # จุดยิงจริง
+        fire_target_tilt = float(np.clip(fire_aim_tilt, x_lo, x_hi))
     else:
         target_pan = float(np.clip(aim_pan, x_lo, x_hi))
         target_tilt = float(np.clip(aim_tilt, y_lo, y_hi))
-    error_deg = math.hypot(target_pan - pan_cur, target_tilt - tilt_cur)
+        fire_target_pan = float(np.clip(fire_aim_pan, x_lo, x_hi))
+        fire_target_tilt = float(np.clip(fire_aim_tilt, y_lo, y_hi))
+    # error สำหรับ 'ความพร้อมยิง' = แขน → จุดยิงจริง (ไม่ใช่จุด track ที่ล้ำ EXTRA)
+    error_deg = math.hypot(fire_target_pan - pan_cur, fire_target_tilt - tilt_cur)
 
     # --- Fire readiness (ซื่อสัตย์): 'ยิงแล้วโดนจริงไหม' ต้องรวมความไม่แน่นอนจาก latency ---
     # pred_miss = arm→intercept (error_deg) เป็นแค่ความคลาดเคลื่อนของการเล็ง
@@ -3375,31 +3407,73 @@ def _tick_lock(ctx):
     # เป้าหลบหลีก → resid_rate สูง → uncert สูง → 'ไม่ยิง' (แก้อาการโดนบ้างเฉียดบ้าง)
     _horizon = float(pipe_lat) + fire_t_flight
     _uncert = (_lock_pred_resid_rate[0] * _horizon * LOCK_FIRE_PRED_UNCERT_K
-               + 0.15 * _acc_mag * _horizon * _horizon
+               + LOCK_FIRE_CURVATURE_K * _acc_mag * _horizon * _horizon
                + LOCK_FIRE_NOISE_FLOOR_DEG)
-    expected_miss = error_deg + _uncert
+    expected_miss = error_deg + _uncert   # honest predicted miss (arm→intercept + uncert) — โชว์ HUD
+    predict_uncert_deg = _uncert          # ความไม่แน่นอน 'ของจุดที่ทำนาย' (ไม่รวม error แขน — snap แก้ให้)
+    confident_ready = False
     if fire_range_m:
+        # hit_radius = รัศมี 'โดนจริง' (scoring/HUD) — เข้มตามขนาดโดรน
         hit_radius_deg = max(
             LOCK_FIRE_READY_MIN_RADIUS_DEG,
             math.degrees(math.atan2(LOCK_FIRE_HIT_RADIUS_M, float(fire_range_m))),
         )
         _stable = (not lock_lost) and (coast_elapsed <= LOCK_LEAD_COAST_SWITCH_SEC)
-        if _stable and fire_safe_zone and expected_miss <= hit_radius_deg:
+        # มั่นใจ = ทำนายจุด intercept แม่นพอจะโดน (uncert ≤ hit_radius × K) — ไม่เกี่ยว error แขน (snap แก้)
+        _confident = (_stable and fire_safe_zone
+                      and predict_uncert_deg <= hit_radius_deg * LOCK_FIRE_CONFIDENCE_K
+                      and _lock_pred_resid_rate[0] <= LOCK_FIRE_MAX_RESID_DEG_S)
+        if _confident:
+            _lock_confident_count[0] += 1
+        else:
+            _lock_confident_count[0] = 0
+        confident_ready = _lock_confident_count[0] >= LOCK_FIRE_CONFIDENT_FRAMES
+        # fire_ready (HUD "SHOOT" + auto-fire): มั่นใจ 'และ' แขนอยู่บนเป้าจริงแล้ว
+        # (โหมด snap: กระโดดให้ error≈0 ก่อน แล้วค่อยตั้ง flag นี้ → ไม่ยิงตอนแขนยังห่าง)
+        aim_converged = error_deg <= hit_radius_deg
+        if _confident and aim_converged:
             _lock_fire_ready_count[0] += 1
         else:
             _lock_fire_ready_count[0] = 0
         fire_ready = _lock_fire_ready_count[0] >= LOCK_FIRE_READY_FRAMES
     else:
         _lock_fire_ready_count[0] = 0
+        _lock_confident_count[0] = 0
     ctx["lock_fire_ready"] = fire_ready
     ctx["lock_fire_safe_zone"] = fire_safe_zone
     ctx["lock_hit_radius_deg"] = hit_radius_deg
+    ctx["lock_predict_uncert_deg"] = predict_uncert_deg
+    ctx["lock_confident"] = confident_ready
     ctx["lock_pred_miss_deg"] = error_deg
     ctx["lock_expected_miss_deg"] = expected_miss
     ctx["lock_pipe_lat"] = float(pipe_lat)
     ctx["lock_fire_t_flight"] = fire_t_flight
     ctx["lock_fire_lead_deg"] = fire_lead_deg
     ctx["last_arm_error_deg"] = error_deg
+
+    # --- SNAP-AND-SHOOT: authorized + 'มั่นใจว่าทำนายแม่นพอจะโดน' → กระโดดไป intercept → ยิง ---
+    # กดยิง = ตั้งใจยิง (ไม่ยิงทันที). ระหว่างที่ยังไม่มั่นใจ (confident_ready=False) → ตกไปข้างล่าง
+    #   = lock ตามเป้าต่อไปเรื่อย ๆ จนกว่าจะทำนายจุดได้แม่น แล้วค่อยกระโดดยิง (แม่น)
+    _fire_auth = ctx.get("fire_authorized", False)
+    if (LOCK_FIRE_SNAP_AND_SHOOT and _fire_auth and _lead_active
+            and confident_ready                                          # มั่นใจว่าทำนายแม่นพอจะโดนแล้ว
+            and fire_safe_zone and not lock_lost
+            and error_deg <= LOCK_FIRE_SNAP_MAX_DEG):                    # ใกล้พอจะ commit กระโดด
+        try:
+            arm_controller.move_absolute(fire_target_pan, fire_target_tilt, blocking=True)  # กระโดดไปจุดยิงจริง
+        except Exception:
+            pass
+        ctx["lock_fire_ready"] = True     # แขนถึงจุดยิงแล้ว → main loop ลั่นไกทันที
+        ctx["lock_fire_snap"] = True
+        ctx["lock_last_arm_move_time"] = now
+        ctx["last_target_pan"] = fire_target_pan
+        ctx["last_target_tilt"] = fire_target_tilt
+        ctx["last_arm_error_deg"] = 0.0
+        if LOCK_TRACK_DEBUG:
+            print(f"[LOCK] SNAP-AND-SHOOT → fire_pt=({fire_target_pan:+.2f},{fire_target_tilt:+.2f}) "
+                  f"was_err={error_deg:.2f}deg uncert={predict_uncert_deg:.2f}deg "
+                  f"resid={_lock_pred_resid_rate[0]:.1f}d/s lead={fire_lead_deg:.2f}deg", flush=True)
+        return
 
     # deadzone ปรับตาม hit radius: เป้าเล็ก/ไกล ต้องเล็งแม่นกว่า deadzone ปกติถึงจะยิงโดน
     eff_deadzone = LOCK_DEADZONE_DEG
@@ -3429,12 +3503,14 @@ def _tick_lock(ctx):
               f"err={error_deg:4.1f}deg vel={_spd:4.1f}d/s "
               f"{'LEAD' if _lead_active else 'coast'} age={coast_elapsed*1000:3.0f}ms "
               f"fire[rng={_rng_s} tof={fire_t_flight*1000:3.0f}ms lead={fire_lead_deg:.2f}deg "
-              f"hit_r={hit_radius_deg if hit_radius_deg is None else round(hit_radius_deg,2)} "
+              f"uncert={predict_uncert_deg:.2f} hit_r={hit_radius_deg if hit_radius_deg is None else round(hit_radius_deg,2)} "
+              f"resid={_lock_pred_resid_rate[0]:.1f}d/s "
+              f"{'CONFIDENT' if confident_ready else 'predicting'} "
               f"{'READY-SHOOT' if fire_ready else 'aiming'}]"
               f"{' COAST' if _coasting else ''}", flush=True)
     ctx["lock_last_arm_move_time"] = lock_last_arm_move_time
-    ctx["last_target_pan"] = target_pan
-    ctx["last_target_tilt"] = target_tilt
+    ctx["last_target_pan"] = fire_target_pan   # จุดยิงจริง (ใช้เทียบใน impact log)
+    ctx["last_target_tilt"] = fire_target_tilt
     ctx["last_arm_error_deg"] = error_deg
     ctx["lock_fire_t_flight"] = fire_t_flight
     ctx["lock_fire_lead_deg"] = fire_lead_deg
@@ -3769,6 +3845,8 @@ def main():
     lock_fire_ready = False
     lock_fire_safe_zone = True
     lock_hit_radius_deg = None
+    lock_predict_uncert_deg = None
+    lock_confident = False
     lock_pred_miss_deg = None
     lock_expected_miss_deg = None
     lock_pipe_lat = 0.0
@@ -4623,6 +4701,8 @@ def main():
                         # learned aim trim (สอนด้วยปุ่ม y จากผลยิงก่อนหน้า)
                         "fire_trim_pan": (_fire_tune_learner.trim_pan if _fire_tune_learner else 0.0),
                         "fire_trim_tilt": (_fire_tune_learner.trim_tilt if _fire_tune_learner else 0.0),
+                        # ผู้ใช้กดยิงใน LOCK แล้ว → เปิด snap-and-shoot (กระโดดไป intercept แล้วยิง)
+                        "fire_authorized": fire_authorized,
                     }
                     if app_mode == "jog":
                         pass  # JOG: ขับแขนด้วยคีย์บอร์ดเท่านั้น — ข้าม auto/lock/manual tick
@@ -4656,6 +4736,8 @@ def main():
                     lock_fire_ready = bool(_ctx.get("lock_fire_ready", False))
                     lock_fire_safe_zone = bool(_ctx.get("lock_fire_safe_zone", True))
                     lock_hit_radius_deg = _ctx.get("lock_hit_radius_deg")
+                    lock_predict_uncert_deg = _ctx.get("lock_predict_uncert_deg")
+                    lock_confident = bool(_ctx.get("lock_confident", False))
                     lock_pred_miss_deg = _ctx.get("lock_pred_miss_deg")
                     lock_expected_miss_deg = _ctx.get("lock_expected_miss_deg")
                     lock_pipe_lat = _ctx.get("lock_pipe_lat", 0.0)
@@ -4809,8 +4891,10 @@ def main():
                                     cv2.FONT_HERSHEY_DUPLEX, _fs * 1.2, (0, 0, 255), _th + 1, cv2.LINE_AA)
                     # บรรทัดสถานะ solution + สถิติ HIT
                     if lock_hit_radius_deg is not None:
-                        _em = lock_expected_miss_deg if lock_expected_miss_deg is not None else 0.0
-                        _stat = (f"exp_miss {_em:.2f}deg / hit_r {lock_hit_radius_deg:.2f}deg  "
+                        _un = f"{lock_predict_uncert_deg:.2f}" if lock_predict_uncert_deg is not None else "-"
+                        _conf = "CONFIDENT" if lock_confident else "predicting"
+                        _stat = (f"predict_uncert {_un} / hit_r {lock_hit_radius_deg:.2f}deg [{_conf}]  "
+                                 f"err {lock_pred_miss_deg if lock_pred_miss_deg is None else round(lock_pred_miss_deg,2)}deg  "
                                  f"lat {lock_pipe_lat*1000:.0f}ms tof {lock_fire_t_flight*1000:.0f}ms  "
                                  f"HIT {lock_hits}/{lock_shots_fired}")
                         cv2.putText(frame, _stat, (int(_fw * 0.02), int(_fh * 0.22)),

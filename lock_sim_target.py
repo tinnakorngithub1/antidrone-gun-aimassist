@@ -316,14 +316,13 @@ class VirtualDroneTarget:
             if 0 <= dx < w and 0 <= dy < h:
                 _sz = max(1, int(d[4] * (1 - frac)))
                 cv2.circle(frame, (dx, dy), _sz, (40, 40, 60), -1, cv2.LINE_AA)
-        # ควันจาง
+        # ควันจาง + ป้าย DESTROYED (เฉพาะเมื่อจุดระเบิดอยู่ในเฟรม — กัน _sr undefined ตอนระเบิดที่ขอบ)
         if 0 <= ix < w and 0 <= iy < h:
             _sr = int(max(6, self.box_deg * abs(self.ppd_x) * 2) * (1 + frac * 3))
             cv2.circle(frame, (ix, iy), _sr, (60, 60, 60), 2, cv2.LINE_AA)
-        # ป้าย DESTROYED
-        cv2.putText(frame, "DESTROYED", (ix - 40, iy - _sr - 8),
-                    cv2.FONT_HERSHEY_DUPLEX, max(0.5, abs(self.ppd_x) / 200.0),
-                    (0, 0, 255), 2, cv2.LINE_AA)
+            cv2.putText(frame, "DESTROYED", (ix - 40, iy - _sr - 8),
+                        cv2.FONT_HERSHEY_DUPLEX, max(0.5, abs(self.ppd_x) / 200.0),
+                        (0, 0, 255), 2, cv2.LINE_AA)
 
     # ---- per-frame hook (เรียกตอนอ่านเฟรม ก่อนส่งเข้า YOLO) ----
     def on_frame(self, frame, arm_pan, arm_tilt, cx, cy, now, draw=True):
