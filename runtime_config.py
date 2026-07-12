@@ -30,6 +30,24 @@ from typing import Any, Dict, List, Optional
 _DIR = Path(__file__).resolve().parent
 JSON_PATH = _DIR / "calibration_data" / "runtime_config.json"
 
+# ค่าตั้งต้น 'ในโค้ด' — บันทึกไว้ตอน apply override (ก่อนทับ) เพื่อให้หน้า Settings โชว์เทียบได้
+# ว่ากำลังปรับออกจากฐานอะไร และย้อนกลับทีละฟิลด์ได้ ถ้าไม่มี override เลย ค่าปัจจุบัน = ค่าตั้งต้น
+# (settings_screen จะเก็บให้เองตอน enter)
+DEFAULTS: Dict[str, Any] = {}
+
+
+def default_key(field: "Field", camera_name: str) -> str:
+    return f"{camera_name}.{field.key}" if field.scope == "camera" else field.key
+
+
+def remember_default(key: str, value: Any) -> None:
+    if key not in DEFAULTS:
+        DEFAULTS[key] = tuple(value) if isinstance(value, list) else value
+
+
+def get_default(field: "Field", camera_name: str) -> Any:
+    return DEFAULTS.get(default_key(field, camera_name))
+
 
 # ---------------------------------------------------------------------------
 # Field spec — ขับหน้า Settings ทั้งหมด
@@ -233,6 +251,7 @@ def apply_to_config(cfg_globals: Dict[str, Any], data: Optional[Dict[str, Any]] 
         if cam_name not in cams or not isinstance(overrides, dict):
             continue
         for k, v in overrides.items():
+            remember_default(f"{cam_name}.{k}", cams[cam_name].get(k))
             if cams[cam_name].get(k) != v:
                 applied.append(f"CAMERAS[{cam_name}].{k} = {v!r}")
             cams[cam_name][k] = v
@@ -240,6 +259,7 @@ def apply_to_config(cfg_globals: Dict[str, Any], data: Optional[Dict[str, Any]] 
     for k, v in (data.get("globals") or {}).items():
         if k not in cfg_globals:
             continue   # ไม่ใช่ของ config.py (อาจเป็นของ 22) — apply_to_module จะจัดการ
+        remember_default(k, cfg_globals[k])
         if isinstance(cfg_globals[k], tuple) and isinstance(v, list):
             v = tuple(v)
         if cfg_globals[k] != v:
@@ -259,6 +279,7 @@ def apply_to_module(mod_globals: Dict[str, Any], data: Optional[Dict[str, Any]] 
     for k, v in (data.get("globals") or {}).items():
         if k not in mod_globals:
             continue
+        remember_default(k, mod_globals[k])
         if isinstance(mod_globals[k], tuple) and isinstance(v, list):
             v = tuple(v)
         if mod_globals[k] != v:
@@ -284,6 +305,16 @@ def get_override(data: Dict[str, Any], field: Field, camera_name: str) -> Any:
     if field.scope == "camera":
         return (data.get("cameras") or {}).get(camera_name, {}).get(field.key)
     return (data.get("globals") or {}).get(field.key)
+
+
+def clear_value(data: Dict[str, Any], field: Field, camera_name: str) -> None:
+    """ลบ override ของฟิลด์เดียว → กลับไปใช้ค่าตั้งต้นในโค้ด"""
+    if field.scope == "root":
+        data.pop(field.key, None)
+    elif field.scope == "camera":
+        (data.get("cameras") or {}).get(camera_name, {}).pop(field.key, None)
+    else:
+        (data.get("globals") or {}).pop(field.key, None)
 
 
 def clear_all() -> bool:

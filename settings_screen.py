@@ -85,6 +85,14 @@ def enter(window_name: str, camera_name: str, cfg_mod, gaa_globals: Dict[str, An
     f = rc.field_by_key("ACTIVE_CAMERA")
     if f is not None and cfg_mod is not None:
         f.choices = sorted(getattr(cfg_mod, "CAMERAS", {}).keys())
+
+    # จำ 'ค่าตั้งต้นในโค้ด' ของทุกฟิลด์ เพื่อโชว์เทียบ + รีเซ็ตทีละตัวได้
+    # ฟิลด์ที่มี override อยู่ → runtime_config จำค่าเดิมไว้ตั้งแต่ตอน apply แล้ว
+    # ฟิลด์ที่ไม่มี override → ค่าปัจจุบัน 'คือ' ค่าตั้งต้น เก็บตรงนี้
+    for fld in rc.all_fields():
+        if rc.get_default(fld, camera_name) is None:
+            rc.remember_default(rc.default_key(fld, camera_name), _source_value(fld))
+
     cv2.setMouseCallback(window_name, _on_mouse)
 
 
@@ -111,10 +119,8 @@ def hud_label() -> str:
 # ---------------------------------------------------------------------------
 # ค่าปัจจุบัน: override (ถ้ามี) > ค่าจริงที่โหลดอยู่
 # ---------------------------------------------------------------------------
-def _current_value(f: rc.Field) -> Any:
-    ov = rc.get_override(_data, f, _camera_name)
-    if ov is not None:
-        return tuple(ov) if f.kind == "pair" and isinstance(ov, list) else ov
+def _source_value(f: rc.Field) -> Any:
+    """ค่าที่ 'อยู่จริง' ในโปรแกรมตอนนี้ (ไม่ดู override dict)"""
     if f.scope == "root":
         return getattr(_cfg_mod, f.key, None)
     if f.scope == "camera":
@@ -126,6 +132,37 @@ def _current_value(f: rc.Field) -> Any:
     if _gaa_globals is not None and f.key in _gaa_globals:
         return _gaa_globals[f.key]
     return getattr(_cfg_mod, f.key, None)
+
+
+def _current_value(f: rc.Field) -> Any:
+    ov = rc.get_override(_data, f, _camera_name)
+    if ov is not None:
+        return tuple(ov) if f.kind == "pair" and isinstance(ov, list) else ov
+    return _source_value(f)
+
+
+def _is_changed(f: rc.Field) -> bool:
+    """ค่าปัจจุบันต่างจากค่าตั้งต้นในโค้ดไหม"""
+    d = rc.get_default(f, _camera_name)
+    if d is None:
+        return False
+    cur = _current_value(f)
+    if isinstance(d, tuple) or isinstance(cur, tuple):
+        return list(d or []) != list(cur or [])
+    return d != cur
+
+
+def _reset_field(f: rc.Field) -> None:
+    """คืนฟิลด์นี้สู่ค่าตั้งต้นในโค้ด"""
+    global _status_msg, _status_color
+    d = rc.get_default(f, _camera_name)
+    if d is None:
+        return
+    rc.clear_value(_data, f, _camera_name)
+    _set_value(f, d)                 # apply + เขียน override = ค่าตั้งต้น
+    rc.clear_value(_data, f, _camera_name)   # แล้วลบ override ทิ้ง (ค่าตั้งต้นไม่ต้องเก็บ)
+    _status_msg = f"{f.label} reset to default = {_fmt(f, d)}"
+    _status_color = C_WARN
 
 
 def _set_value(f: rc.Field, v: Any) -> None:
@@ -359,7 +396,16 @@ def tick(frame: np.ndarray) -> np.ndarray:
             vcol = C_EDIT
         else:
             vtxt = _fmt(f, _current_value(f))
-            vcol = C_OK if rc.get_override(_data, f, _camera_name) is not None else col
+            # เขียว = ถูกแก้จากค่าตั้งต้นแล้ว (จะได้เห็นทันทีว่าอะไรถูกแตะไปบ้าง)
+            vcol = C_OK if _is_changed(f) else col
+
+        # ค่าตั้งต้นในโค้ด — โชว์เฉพาะตอนที่ค่าถูกเปลี่ยน จะได้รู้ว่าปรับออกจากฐานอะไร
+        # และกด R เพื่อย้อนกลับได้
+        if _is_changed(f) and not (sel and _editing_text):
+            dflt = rc.get_default(f, _camera_name)
+            ht.put_text(frame, f"(default {_fmt(f, dflt)})",
+                        (val_x + btn_w + int(300 * s), ry + int(22 * s)),
+                        fs_sm, C_DIM, th)
         ht.put_text(frame, vtxt, (val_x + btn_w + int(14 * s), ry + int(22 * s)), fs, vcol, th)
 
         if sel and not _editing_text:
@@ -389,8 +435,8 @@ def tick(frame: np.ndarray) -> np.ndarray:
     # สถานะ + คีย์
     if _status_msg:
         ht.put_text(frame, _status_msg, (label_x, by + int(24 * s)), fs_sm, _status_color, th)
-    hint = ("Up/Down = select   Left/Right = adjust   E or Enter = type value   "
-            "Tab = next tab   F5 = reset defaults   Ctrl+S = save   Esc = discard & exit")
+    hint = ("Up/Down = select   Left/Right = adjust   E/Enter = type   R = reset this field   "
+            "Tab = next tab   F5 = reset ALL   Ctrl+S = save   Esc = discard & exit")
     ht.put_text(frame, hint, (label_x, y1 - int(20 * s)), fs_sm, C_DIM, th)
     return frame
 
@@ -444,10 +490,19 @@ def handle_key(key: int) -> str:
         return "none"
 
     if key == K_F5:
+        # คืนค่าจริง 'ในโปรแกรมที่กำลังรัน' ด้วย ไม่ใช่แค่ลบไฟล์
+        # (ลบไฟล์อย่างเดียว = โปรแกรมยังใช้ค่าที่แก้ไปอยู่จนกว่าจะ restart → ข้อความบอกว่า
+        #  'cleared' ทั้งที่ยังไม่ cleared จริง = โกหกผู้ใช้)
+        n_live = 0
+        for fld in rc.all_fields():
+            if _is_changed(fld) and fld.live:
+                _reset_field(fld)
+                n_live += 1
         rc.clear_all()
         _data = {}
         _dirty = False
-        _status_msg = "All overrides cleared - using config.py defaults (restart to fully apply)"
+        _status_msg = (f"All overrides cleared - {n_live} live values restored now; "
+                       "restart-only values apply after restart")
         _status_color = C_WARN
         return "reset"
 
@@ -467,6 +522,8 @@ def handle_key(key: int) -> str:
             _begin_text_edit(cur)
         else:
             _nudge(cur, +1)
+    elif cur is not None and key in (ord("r"), ord("R")):
+        _reset_field(cur)           # ย้อนฟิลด์นี้กลับค่าตั้งต้นในโค้ด
     elif ord("1") <= key <= ord("9"):
         i = key - ord("1")
         if i < len(flds):
