@@ -712,11 +712,17 @@ LOCK_LEAD_ACCEL_MAX_DEG = 3.0      # cap พจน์ ½·a·t² กัน accel
 #       → แปลงเป็น deg² ด้วย (σ_px/ppd)² ตาม ppd ของกล้องที่ใช้จริง (คำนวณตอน runtime)
 # ค่าที่ cam4 (ppd 87.138): Q = 0.1/87² = 1.32e-5, R = (5/87.138)² = 3.29e-3 → เท่าของเดิมเป๊ะ
 # deg² — process noise = "โดรนหักเลี้ยว/เร่งแรงแค่ไหน" (ความคล่องตัวของเป้า ไม่เกี่ยวกล้อง)
-# ค่าเดิม 1.32e-5 ต่ำเกินสำหรับกล้อง 10fps: filter เชื่อว่าเป้าเคลื่อนเรียบมาก → ตอบสนองช้า →
-# ตามหลังเป้าที่เร่ง/เลี้ยว. sim (cam4 10fps): เป้า 5°/s ที่ 20m โดน 42% -> 93% เมื่อ Q x15
-# เป้าช้ายังโดน 100% เท่าเดิม (ไม่เสียอะไร). ที่กล้อง fps สูงกว่านี้ ลดลงได้ (measurement ถี่ →
-# ไม่ต้องพึ่ง process model มาก) — เป็นค่าที่ควรสเกลตาม fps ในอนาคต
-LOCK_BEARING_Q_DEG2 = 1.98e-4      # = 1.32e-5 x 15 (จูนสำหรับ 10fps)
+#
+# ⚠️ Q ต้องสเกลตาม fps ของกล้อง — เปลี่ยนกล้องแล้วปรับตามอัตโนมัติ:
+#   ทฤษฎี Kalman (constant-velocity + white-noise accel): Q ต่อ update ∝ dt = 1/fps
+#   ยืนยันจาก sim: fit Q_mult ∝ dt^1.09 (≈ 1.0 พอดี) ที่ fps 10-60
+#   เหตุผล: fps ต่ำ = measurement ห่าง = filter ต้องพึ่ง process model มากขึ้น = ตอบไวขึ้น
+#           fps สูง = measurement ถี่ = ลด Q ได้ = กรอง noise ดีขึ้น
+#   ค่าเดิม 1.32e-5 (จูนที่ ~30fps เดิม) ต่ำเกินสำหรับ cam4 10fps → filter ตอบช้า → ตามหลังเป้า
+#   sim (cam4 10fps): เป้า 5°/s ที่ 20m โดน 42% -> 93% เมื่อ Q ปรับตาม fps
+# lock_bearing_kalman_qr() คำนวณ Q จาก det_fps ที่ 'วัดจริงตอนรัน' → กล้องอะไรก็ถูกเอง
+LOCK_BEARING_Q_REF = 1.98e-3       # Q × fps ที่สมดุล (Q(fps) = REF / fps); ที่ 10fps = 1.98e-4
+LOCK_BEARING_Q_FPS_FALLBACK = 10.0 # ใช้เมื่อยังวัด fps ไม่ได้ (เฟรมแรก ๆ)
 LOCK_MEAS_SIGMA_PX = 5.0           # 1σ ของ bbox-center jitter (พิกเซล) — ต้องวัดใหม่ต่อกล้อง
 PPD_X_FALLBACK = 87.138            # ppd cam4 — ใช้เมื่อยังไม่ได้โหลดคาลิเบรต (คงพฤติกรรมเดิม)
 
@@ -736,22 +742,29 @@ def fire_gate_max_range_m() -> float:
     return LOCK_FIRE_HIT_RADIUS_M / t if t > 1e-9 else float("inf")
 
 
-def lock_bearing_kalman_qr(ppd_x, sigma_px: Optional[float] = None):
+def lock_bearing_kalman_qr(ppd_x, sigma_px: Optional[float] = None,
+                           det_fps: Optional[float] = None):
     """
-    คืน (q, r) หน่วย deg² สำหรับ lock_kalman ตาม ppd ของกล้องที่ใช้จริง.
-    Q คงที่ (ฟิสิกส์ของเป้า); R = (σ_px / ppd)² (jitter ของกล้องแปลงเป็นองศา).
+    คืน (q, r) หน่วย deg² สำหรับ lock_kalman — ปรับตามกล้องที่ใช้จริงอัตโนมัติ.
+      Q = process noise สเกลตาม fps: Q(fps) = LOCK_BEARING_Q_REF / fps
+          (fps ต่ำ → measurement ห่าง → ต้องพึ่ง process model มาก → Q สูง → ตอบไว)
+          เปลี่ยนกล้อง fps เท่าไร Q ปรับตามเอง ไม่ต้องจูนมือ
+      R = measurement noise = (σ_px / ppd)²  (jitter กล้องแปลงเป็นองศา)
 
-    sigma_px=None → อ่าน LOCK_MEAS_SIGMA_PX 'ตอนเรียก' ไม่ใช่ใส่เป็น default argument:
-    Python ประเมิน default argument ครั้งเดียวตอน def → ค่าจะถูกแช่แข็งตั้งแต่ import
-    แก้ผ่านหน้า Settings ทีหลังจะไม่มีผลเลย (บั๊กที่เจอตอนตรวจว่า 'ค่าที่โชว์ = ค่าที่ใช้จริงไหม')
+    sigma_px / det_fps = None → อ่านค่า global 'ตอนเรียก' ไม่ใช่ default argument
+    (Python ประเมิน default arg ครั้งเดียวตอน def → แช่แข็งค่า → แก้ผ่าน Settings ไม่มีผล)
     """
     ppd = abs(float(ppd_x)) if ppd_x else 0.0
     if ppd < 1e-6:
         ppd = PPD_X_FALLBACK
     s = LOCK_MEAS_SIGMA_PX if sigma_px is None else float(sigma_px)
-    return LOCK_BEARING_Q_DEG2, (s / ppd) ** 2
+    fps = float(det_fps) if det_fps and det_fps > 1e-3 else LOCK_BEARING_Q_FPS_FALLBACK
+    fps = max(2.0, min(120.0, fps))              # clamp กันค่าเพี้ยนตอนวัด fps ยังไม่นิ่ง
+    q = LOCK_BEARING_Q_REF / fps
+    return q, (s / ppd) ** 2
 LOCK_TRACK_DEBUG = True            # print telemetry _tick_lock (throttled) เพื่อวินิจฉัยอาการจริง (ปิดได้)
 _lock_dbg_last_t = [0.0]          # throttle timer สำหรับ debug print
+_lock_q_fps_last = [0.0]          # throttle: อัปเดต Q ตาม fps ทุก ~1 วิ
 _lock_dbg2_last_t = [0.0]         # throttle timer สำหรับ guard-state debug
 
 
@@ -795,6 +808,7 @@ class _TargetKalman:
         self.kf.errorCovPost = np.eye(4, dtype=np.float32)
         self._initialized = False
         self._last_update_time: float = 0.0
+        self._upd_dt_ema: Optional[float] = None   # EMA ช่วง update → detection fps จริง (สเกล Q)
 
     def reset(self) -> None:
         self._initialized = False
@@ -813,15 +827,23 @@ class _TargetKalman:
         self.reset()  # bearing เก่าคิดจาก ppd เดิม → ใช้ต่อไม่ได้
 
     def _update_dt(self) -> None:
-        """อัปเดต dt ใน transition matrix จากเวลาจริง."""
+        """อัปเดต dt ใน transition matrix จากเวลาจริง + วัด detection fps (EMA ของ dt)."""
         now = time.time()
         if self._last_update_time > 0:
             dt = max(0.005, min(now - self._last_update_time, 0.5))
+            # EMA ของช่วงเวลา update = detection fps จริง (ไม่ใช่ loop fps) → ใช้สเกล Q ตามกล้อง
+            self._upd_dt_ema = dt if self._upd_dt_ema is None else 0.9 * self._upd_dt_ema + 0.1 * dt
         else:
             dt = 1.0 / 15.0
         self.kf.transitionMatrix[0, 2] = dt
         self.kf.transitionMatrix[1, 3] = dt
         self._last_update_time = now
+
+    def measured_fps(self) -> Optional[float]:
+        """detection fps ที่วัดได้จริง (จากช่วง update) — None ถ้ายังไม่พอ"""
+        if self._upd_dt_ema is None or self._upd_dt_ema < 1e-4:
+            return None
+        return 1.0 / self._upd_dt_ema
 
     def update(self, cx: float, cy: float, conf: float = 1.0) -> Tuple[float, float]:
         """
@@ -3906,6 +3928,14 @@ def _tick_lock(ctx):
         return  # ยังไม่ได้ล็อกเป้า / ยังไม่มี bearing measurement แรก → ไม่ขับแขน
 
     now = time.time()
+    # Q สเกลตาม detection fps ที่วัดจริง → เปลี่ยนกล้อง fps เท่าไร Q ปรับตามเอง (เช็คทุก ~1 วิ)
+    if now - _lock_q_fps_last[0] > 1.0:
+        _lock_q_fps_last[0] = now
+        _mfps = lock_kalman.measured_fps()
+        if _mfps is not None:
+            _q_new, _ = lock_bearing_kalman_qr(ctx.get("px_per_deg_x"), det_fps=_mfps)
+            if abs(_q_new - lock_kalman._q) / max(1e-9, lock_kalman._q) > 0.15:
+                lock_kalman.set_noise(q=_q_new)   # เปลี่ยนเฉพาะตอนต่างเกิน 15% (กันรีเซ็ตถี่)
     # measurement เข้า filter เฉพาะตอน tracker match จริง (main loop) → age = ความเก่าของเป้า
     coast_elapsed = now - lock_kalman._last_update_time
     if coast_elapsed > LOCK_KALMAN_COAST_MAX_SEC:
