@@ -2203,9 +2203,11 @@ def _draw_hud_segments_row(frame, x_start, y_pos, font, font_scale, thickness, p
         chunk = str(text)
         tw = cv2.getTextSize(chunk, font, font_scale, thickness)[0][0]
         if x + tw > max_x:
-            while chunk and x + cv2.getTextSize(chunk + "…", font, font_scale, thickness)[0][0] > max_x:
+            # ตัวตัดต้องเป็น ASCII: cv2.putText วนทีละ 'ไบต์' ไม่ใช่ทีละอักขระ
+            # → '…' (UTF-8 3 ไบต์) ออกมาเป็น '???' บนจอ (เหตุผลเดียวกับที่ไทยกลายเป็น ?)
+            while chunk and x + cv2.getTextSize(chunk + "..", font, font_scale, thickness)[0][0] > max_x:
                 chunk = chunk[:-1]
-            chunk = (chunk + "…") if chunk else ""
+            chunk = (chunk + "..") if chunk else ""
             tw = cv2.getTextSize(chunk, font, font_scale, thickness)[0][0]
         if not chunk:
             break
@@ -2657,8 +2659,23 @@ def _cam8_stream_hud_label(has_signal, status_msg=""):
     return "CAM8:ERR", (0, 80, 255)
 
 
-def _draw_two_row_bottom_hud(frame, metrics, status_parts, status_sample):
-    """Shared two-row bottom HUD: metrics row (bottom) + colored status segments (above)."""
+def _status_row_width(parts, font, font_scale, thickness, sep=" | "):
+    """ความกว้างจริงของแถว status ที่จะวาด (รวมตัวคั่น)"""
+    sep_w = cv2.getTextSize(sep, font, font_scale, thickness)[0][0] if sep else 0
+    texts = [str(t) for t, _c in parts if t]
+    if not texts:
+        return 0
+    return sum(cv2.getTextSize(t, font, font_scale, thickness)[0][0]
+               for t in texts) + (len(texts) - 1) * sep_w
+
+
+def _draw_two_row_bottom_hud(frame, metrics, status_parts, status_sample=None):
+    """Shared two-row bottom HUD: metrics row (bottom) + colored status segments (above).
+
+    status_sample: เลิกใช้แล้ว — เดิมย่อฟอนต์โดยวัดจาก 'สตริงตัวอย่างที่พิมพ์มือ' ซึ่งไม่ตรงกับ
+    ของที่วาดจริง (ขาดปุ่มไปหลายตัว) → ย่อไม่พอ → แถวถูกตัดทิ้งเงียบ ๆ. ตอนนี้วัดจาก
+    status_parts ตรง ๆ → เพิ่มปุ่มใหม่แล้วไม่มีทางหายไปโดยไม่รู้ตัว
+    """
     h, w = frame.shape[:2]
     ui_scale = max(0.3, min(1.5, min(h, w) / 1080.0))
     font = cv2.FONT_HERSHEY_SIMPLEX
@@ -2682,7 +2699,7 @@ def _draw_two_row_bottom_hud(frame, metrics, status_parts, status_sample):
             n_slots += 1
         if n_slots > 1:
             total_w += (n_slots - 1) * spacing
-        w_status = cv2.getTextSize(status_sample, font, font_scale, thickness)[0][0]
+        w_status = _status_row_width(status_parts, font, font_scale, thickness)
         if total_w <= available_width and w_status <= available_width:
             break
         font_scale = round(font_scale - 0.02, 2)
@@ -6656,7 +6673,7 @@ def main():
                 _r = settings_screen.handle_key(key)
                 if _r == "exit":
                     if settings_screen.is_dirty():
-                        print("[SETTINGS] ออกโดยไม่บันทึก — ค่าที่แก้ถูกทิ้ง (Ctrl+S เพื่อบันทึก)")
+                        print("[SETTINGS] exited without saving (Ctrl+S to save)")
                     _exit_settings()
                 elif _r in ("saved", "reset"):
                     # ค่า live ถูก apply ไปแล้วตอนแก้; ที่ต้องทำคือ derive ค่าที่ผูกกับ ppd ใหม่

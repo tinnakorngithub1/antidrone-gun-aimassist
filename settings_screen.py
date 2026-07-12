@@ -100,7 +100,7 @@ def set_display_size(display_w: int, display_h: int,
 
 
 def hud_label() -> str:
-    return f"SETTINGS [{rc.SECTIONS[_section_idx]}]" + ("  *แก้แล้วยังไม่บันทึก" if _dirty else "")
+    return f"SETTINGS [{rc.SECTIONS[_section_idx]}]" + ("  *unsaved" if _dirty else "")
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +129,7 @@ def _set_value(f: rc.Field, v: Any) -> None:
     rc.set_value(_data, f, list(v) if isinstance(v, tuple) else v, _camera_name)
     _dirty = True
     if not f.live:
-        _status_msg = f"{f.label}: ต้อง restart ถึงมีผล"
+        _status_msg = f"{f.label}: takes effect after restart"
         _status_color = C_WARN
         return
     # live → ให้มีผลเดี๋ยวนี้
@@ -141,7 +141,7 @@ def _set_value(f: rc.Field, v: Any) -> None:
         _gaa_globals[f.key] = v
     elif _cfg_mod is not None:
         setattr(_cfg_mod, f.key, v)
-    _status_msg = f"{f.label} = {_fmt(f, v)}  (มีผลทันที)"
+    _status_msg = f"{f.label} = {_fmt(f, v)}  (applied now)"
     _status_color = C_OK
 
 
@@ -149,7 +149,7 @@ def _fmt(f: rc.Field, v: Any) -> str:
     if v is None:
         return "-"
     if f.kind == "bool":
-        return "เปิด" if v else "ปิด"
+        return "ON" if v else "OFF"
     if f.kind == "pair":
         return f"{float(v[0]):.0f} .. {float(v[1]):.0f}"
     if f.kind == "float":
@@ -203,7 +203,7 @@ def _begin_text_edit(f: rc.Field) -> None:
     _editing_text = True
     v = _current_value(f)
     _text_buf = "" if v is None else str(v)
-    _status_msg = "พิมพ์ค่า แล้ว Enter = ตกลง / Esc = ยกเลิก"
+    _status_msg = "Type a value, then Enter = OK / Esc = cancel"
     _status_color = C_EDIT
 
 
@@ -219,7 +219,7 @@ def _commit_text(f: rc.Field) -> None:
         else:
             _set_value(f, raw)
     except ValueError:
-        _status_msg = f"ค่าไม่ถูกต้อง: {raw!r}"
+        _status_msg = f"Invalid value: {raw!r}"
         _status_color = (80, 80, 255)
 
 
@@ -350,7 +350,7 @@ def tick(frame: np.ndarray) -> np.ndarray:
             if f.kind in ("str", "int", "float"):
                 ex = x1 - int(28 * s) - btn_w - int(90 * s)
                 cv2.rectangle(frame, (ex, ry), (ex + int(80 * s), ry + int(28 * s)), C_PANEL, -1)
-                ht.put_text(frame, "พิมพ์", (ex + int(8 * s), ry + int(21 * s)), fs_sm, C_TEXT, th)
+                ht.put_text(frame, "type", (ex + int(8 * s), ry + int(21 * s)), fs_sm, C_TEXT, th)
                 _hitboxes.append((ex, ry, ex + int(80 * s), ry + int(28 * s), "edit", i))
 
     # help ของฟิลด์ที่เลือก
@@ -362,8 +362,8 @@ def tick(frame: np.ndarray) -> np.ndarray:
     # สถานะ + คีย์
     if _status_msg:
         ht.put_text(frame, _status_msg, (label_x, by + int(24 * s)), fs_sm, _status_color, th)
-    hint = ("ลูกศรขึ้น/ลง = เลือกฟิลด์   ลูกศรซ้าย/ขวา = ปรับค่า   E หรือ Enter = พิมพ์ค่า   "
-            "Tab = เปลี่ยนแท็บ   F5 = คืนค่าตั้งต้น   Ctrl+S = บันทึก   Esc = ออกโดยไม่บันทึก")
+    hint = ("Up/Down = select   Left/Right = adjust   E or Enter = type value   "
+            "Tab = next tab   F5 = reset defaults   Ctrl+S = save   Esc = discard & exit")
     ht.put_text(frame, hint, (label_x, y1 - int(20 * s)), fs_sm, C_DIM, th)
     return frame
 
@@ -394,7 +394,7 @@ def handle_key(key: int) -> str:
             _commit_text(cur)
         elif key == K_ESC:
             _editing_text = False
-            _status_msg = "ยกเลิกการพิมพ์"
+            _status_msg = "Edit cancelled"
             _status_color = C_DIM
         elif key in (8, 127):          # backspace
             _text_buf = _text_buf[:-1]
@@ -409,10 +409,10 @@ def handle_key(key: int) -> str:
     if key == K_CTRL_S:
         if rc.save(_data):
             _dirty = False
-            _status_msg = f"บันทึกแล้ว → {rc.JSON_PATH.name}"
+            _status_msg = f"Saved to {rc.JSON_PATH.name}"
             _status_color = C_OK
             return "saved"
-        _status_msg = "บันทึกไม่สำเร็จ"
+        _status_msg = "Save failed"
         _status_color = (80, 80, 255)
         return "none"
 
@@ -420,7 +420,7 @@ def handle_key(key: int) -> str:
         rc.clear_all()
         _data = {}
         _dirty = False
-        _status_msg = "ลบ override ทั้งหมด → ใช้ค่าตั้งต้นใน config.py (restart เพื่อให้มีผลเต็ม)"
+        _status_msg = "All overrides cleared - using config.py defaults (restart to fully apply)"
         _status_color = C_WARN
         return "reset"
 

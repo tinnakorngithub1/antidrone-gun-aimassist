@@ -55,78 +55,78 @@ class Field:
         self.help = help
 
 
-SECTIONS: List[str] = ["กล้อง", "แขนกล", "Detection", "การยิง"]
+SECTIONS: List[str] = ["Camera", "Arm", "Detection", "Firing"]
 
 SPEC: Dict[str, List[Field]] = {
-    "กล้อง": [
-        Field("ACTIVE_CAMERA", "กล้องที่ใช้", "enum", "root", False,
-              choices=[], help="สลับกล้อง — ต้อง restart และกล้องใหม่ต้องคาลิเบรตก่อนใช้ AUTO/LOCK"),
+    "Camera": [
+        Field("ACTIVE_CAMERA", "Active camera", "enum", "root", False,
+              choices=[], help="Switch camera. Needs restart; a new camera must be calibrated before AUTO/LOCK"),
         Field("rtsp_url", "RTSP URL", "str", "camera", False),
         Field("udp_ip", "UDP IP", "str", "camera", False),
         Field("udp_port", "UDP port", "int", "camera", False, lo=1, hi=65535, step=1),
-        Field("use_udp_direct", "ใช้ UDP direct", "bool", "camera", False),
-        Field("stream_format", "รูปแบบสตรีม", "enum", "camera", False, choices=["h264", "h265"]),
-        Field("width", "ความกว้าง", "int", "camera", False, lo=320, hi=7680, step=160, unit="px",
-              help="ต้องตรงกับที่กล้องส่งมาจริง — ไม่ใช่ตัวเลขจากสเปค"),
-        Field("height", "ความสูง", "int", "camera", False, lo=240, hi=4320, step=90, unit="px"),
+        Field("use_udp_direct", "UDP direct", "bool", "camera", False),
+        Field("stream_format", "Stream format", "enum", "camera", False, choices=["h264", "h265"]),
+        Field("width", "Width", "int", "camera", False, lo=320, hi=7680, step=160, unit="px",
+              help="Must match the actual decoded stream size, not the datasheet number"),
+        Field("height", "Height", "int", "camera", False, lo=240, hi=4320, step=90, unit="px"),
         Field("ego_comp_latency_sec", "Ego-comp latency", "float", "camera", True,
               lo=0.0, hi=0.30, step=0.005, unit="s",
-              help="latency กล้อง (sensor→decode) — ให้ wizard วัดให้ อย่าเดา"),
-        Field("use_video_file", "เล่นจากไฟล์วิดีโอ", "bool", "camera", False),
-        Field("video_filename", "ไฟล์วิดีโอ", "str", "camera", False),
+              help="Camera latency (sensor to decode). Let the wizard measure it, do not guess"),
+        Field("use_video_file", "Play from video file", "bool", "camera", False),
+        Field("video_filename", "Video file", "str", "camera", False),
     ],
-    "แขนกล": [
-        Field("CAM4_ARM_ENABLED", "เปิดใช้แขนกล", "bool", "global", False),
-        Field("CAM4_ARM_SIMULATION_MODE", "โหมดจำลอง (ไม่ต่อ serial)", "bool", "global", False),
+    "Arm": [
+        Field("CAM4_ARM_ENABLED", "Arm enabled", "bool", "global", False),
+        Field("CAM4_ARM_SIMULATION_MODE", "Simulation mode (no serial)", "bool", "global", False),
         Field("CAM4_ARM_SERIAL_PORT", "Serial port", "str", "global", False),
         Field("CAM4_ARM_BAUD_RATE", "Baud rate", "int", "global", False,
               lo=9600, hi=921600, step=9600),
-        Field("CAM4_ARM_X_LIMITS", "ลิมิต pan (องศา)", "pair", "global", False,
+        Field("CAM4_ARM_X_LIMITS", "Pan limits (deg)", "pair", "global", False,
               lo=-180, hi=180, step=1),
-        Field("CAM4_ARM_Y_LIMITS", "ลิมิต tilt (องศา)", "pair", "global", False,
+        Field("CAM4_ARM_Y_LIMITS", "Tilt limits (deg)", "pair", "global", False,
               lo=-90, hi=90, step=1),
         Field("CAM4_ARM_FEED_RATE", "Feed rate", "int", "global", False,
               lo=1000, hi=30000, step=1000, unit="mm/min"),
-        Field("CAM4_ARM_HOME_FEED_RATE", "Feed rate ตอน home", "int", "global", False,
+        Field("CAM4_ARM_HOME_FEED_RATE", "Feed rate (homing)", "int", "global", False,
               lo=500, hi=20000, step=500, unit="mm/min"),
-        Field("CAM4_ARM_RUN_HOMING_ON_START", "Home ตอนเปิดโปรแกรม", "bool", "global", False),
+        Field("CAM4_ARM_RUN_HOMING_ON_START", "Home on startup", "bool", "global", False),
     ],
     "Detection": [
-        Field("YOLO_CONF_DETECT", "Conf ตอน detect (AUTO)", "float", "global", True,
+        Field("YOLO_CONF_DETECT", "Conf: detect (AUTO)", "float", "global", True,
               lo=0.05, hi=0.95, step=0.05),
-        Field("YOLO_CONF_LOCK", "Conf ตอน LOCK", "float", "global", True,
+        Field("YOLO_CONF_LOCK", "Conf: LOCK", "float", "global", True,
               lo=0.05, hi=0.95, step=0.05),
-        Field("CAM4_ARM_YOLO_DETECTION_MODE", "โหมดโมเดล", "enum", "global", False,
+        Field("CAM4_ARM_YOLO_DETECTION_MODE", "Model mode", "enum", "global", False,
               choices=["drone_only", "multiclass"]),
         Field("CAM4_ARM_YOLO_ENGINE_RGB_640", "Engine RGB", "str", "global", False),
         Field("CAM4_ARM_YOLO_ENGINE_THERMAL_640", "Engine thermal", "str", "global", False),
-        Field("LOCK_ROI_SPAN_DEG", "ROI ที่ป้อน YOLO", "float", "global", True,
+        Field("LOCK_ROI_SPAN_DEG", "YOLO ROI span", "float", "global", True,
               lo=2.0, hi=30.0, step=0.5, unit="°",
-              help="ครอบมุมคงที่ → โดรนกินพิกเซลเท่ากันทุกกล้อง"),
+              help="Fixed angular span, so a drone occupies the same pixels on any camera"),
     ],
-    "การยิง": [
-        Field("muzzle_velocity_ms", "ความเร็วปากลำกล้อง", "float", "shooter", True,
+    "Firing": [
+        Field("muzzle_velocity_ms", "Muzzle velocity", "float", "shooter", True,
               lo=100, hi=1500, step=25, unit="m/s"),
-        Field("target_size_m", "ขนาดเป้า (โดรน)", "float", "shooter", True,
+        Field("target_size_m", "Target size (drone)", "float", "shooter", True,
               lo=0.05, hi=2.0, step=0.05, unit="m",
-              help="ใช้ประเมินระยะจากขนาด bbox — ผิด = ระยะผิด = fire gate ผิด"),
-        Field("effective_range_m", "ระยะหวังผล", "float", "shooter", True,
+              help="Used to estimate range from bbox size. Wrong here = wrong range = wrong fire gate"),
+        Field("effective_range_m", "Effective range", "float", "shooter", True,
               lo=10, hi=500, step=10, unit="m"),
-        Field("bullet_weight_g", "น้ำหนักกระสุน", "float", "shooter", True,
+        Field("bullet_weight_g", "Bullet weight", "float", "shooter", True,
               lo=1, hi=50, step=0.5, unit="g"),
-        Field("LOCK_FIRE_HIT_RADIUS_M", "รัศมีปะทะ", "float", "global", True,
+        Field("LOCK_FIRE_HIT_RADIUS_M", "Hit radius", "float", "global", True,
               lo=0.05, hi=2.0, step=0.05, unit="m"),
-        Field("LOCK_FIRE_CONFIDENCE_K", "ตัวคูณความมั่นใจ", "float", "global", True,
+        Field("LOCK_FIRE_CONFIDENCE_K", "Confidence K", "float", "global", True,
               lo=0.1, hi=2.0, step=0.05,
-              help="ยอมยิงเมื่อ uncert ≤ hit_radius × ค่านี้ — ต่ำ = เข้มงวด"),
+              help="Fire only when uncertainty <= hit_radius * K. Lower = stricter"),
         Field("LOCK_FIRE_NOISE_FLOOR_DEG", "Noise floor (intercept)", "float", "global", True,
               lo=0.0, hi=3.0, step=0.05, unit="°",
-              help="ให้ wizard วัดให้ — สูงไป=ไล่ตามไม่ยิง, ต่ำไป=ยิงแล้วพลาด"),
+              help="Let the wizard measure it. Too high = chases but never fires; too low = fires and misses"),
         Field("LOCK_FIRE_RESID_NOISE_FLOOR_DEG", "Noise floor (residual)", "float", "global", True,
               lo=0.0, hi=3.0, step=0.05, unit="°"),
-        Field("LOCK_MEAS_SIGMA_PX", "σ ของ bbox jitter", "float", "global", True,
+        Field("LOCK_MEAS_SIGMA_PX", "Sigma of bbox jitter", "float", "global", True,
               lo=0.5, hi=60.0, step=0.5, unit="px",
-              help="ป้อน Kalman R = (σ/ppd)² — ให้ wizard วัดให้"),
+              help="Feeds Kalman R = (sigma/ppd)^2. Let the wizard measure it"),
     ],
 }
 
@@ -156,7 +156,7 @@ def load() -> Dict[str, Any]:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except Exception as e:
-        print(f"⚠️ runtime_config: อ่าน {JSON_PATH.name} ไม่ได้ ({e}) — ใช้ค่าตั้งต้นจาก config.py")
+        print(f"WARN runtime_config: cannot read {JSON_PATH.name} ({e}) - using config.py defaults")
         return {}
 
 
@@ -169,7 +169,7 @@ def save(data: Dict[str, Any]) -> bool:
         tmp.replace(JSON_PATH)   # atomic — ไฟฟ้าดับกลางคันไม่ทิ้งไฟล์ครึ่งใบ
         return True
     except Exception as e:
-        print(f"❌ runtime_config: บันทึกไม่ได้: {e}")
+        print(f"ERROR runtime_config: save failed: {e}")
         return False
 
 
