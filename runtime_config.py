@@ -156,6 +156,11 @@ SPEC: Dict[str, List[Field]] = {
               lo=10, hi=500, step=10, unit="m"),
         Field("bullet_weight_g", "Bullet weight", "float", "shooter", True,
               lo=1, hi=50, step=0.5, unit="g"),
+        Field("boresight_zero_range_m", "Boresight zero range", "float", "shooter", True,
+              lo=0, hi=300, step=5, unit="m",
+              help="Range you zeroed the crosshair at by live fire. 0 = pure mechanical boresight. "
+                   "Gravity drop at this range is already baked into the boresight, so it is "
+                   "subtracted from the drop compensation - otherwise it is counted twice"),
         Field("LOCK_FIRE_HIT_RADIUS_M", "Hit radius", "float", "global", True,
               lo=0.05, hi=2.0, step=0.05, unit="m"),
         Field("LOCK_FIRE_CONFIDENCE_K", "Confidence K", "float", "global", True,

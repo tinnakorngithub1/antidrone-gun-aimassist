@@ -5,6 +5,11 @@
     "x": 1920.0,
     "y": 1080.0
   },
-  "pixel_per_degree_x": 87.13837567036975,
-  "pixel_per_degree_y": -89.73408577160026
+  "pixel_per_degree_x": 78.88062141979991,
+  "pixel_per_degree_y": -79.35116054027974,
+  "measured_by": "calib_wizard",
+  "r2": [
+    0.9934039218783074,
+    0.9939742328160955
+  ]
 }
