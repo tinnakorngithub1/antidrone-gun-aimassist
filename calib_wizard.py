@@ -327,11 +327,12 @@ def _worker_ppd(arm) -> None:
                 if _spread > PPD_HALF_SPREAD_MAX_PCT:
                     _bad.append(f"{_name} {_spread:.0f}%")
         if _bad:
-            raise RuntimeError(
-                f"parallax detected ({', '.join(_bad)}) - ppd changes with viewing direction. "
-                "The camera is not on the rotation axis and the scene is too close. "
-                "Point at a FAR scene (>100m: buildings/trees out a window) and retry"
-            )
+            # เตือน ไม่ปฏิเสธ — คาลิเบรตในห้องเพื่อ 'ทดสอบว่าระบบทำงาน' เป็นเรื่องถูกต้อง
+            # ppd ที่ได้ใช้ได้กับเป้าที่ระยะใกล้เคียงฉากที่คาลิเบรต พอไปหน้างานจริงก็กด W ใหม่
+            # (ยิ่งฉาก/เป้าไกล parallax ยิ่งหายไปเอง → ค่ายิ่งเป็นค่าจริงของเลนส์)
+            _say(f"WARN parallax {', '.join(_bad)} - ppd changes with viewing direction")
+            _say("   camera is off the rotation axis + scene is close. Value is OK for targets at")
+            _say("   this scene depth, but re-run W at the real site (far scene = no parallax)")
 
         # กล้องอยู่บนแขน: แขนหมุน +Δ → ฉากเลื่อน −Δ·ppd ในภาพ  (convention เดียวกับ LOCK)
         mx, r2x = _fit_through_origin(dpan, dpx)
