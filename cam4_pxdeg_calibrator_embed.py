@@ -150,10 +150,23 @@ def is_active() -> bool:
     return _active
 
 
-def set_display_size(display_w: int, display_h: int) -> None:
+def set_display_size(
+    display_w: int,
+    display_h: int,
+    content_rect: Optional[Tuple[int, int, int, int]] = None,
+) -> None:
+    """content_rect = (x, y, w, h) ของ 'ภาพจริง' ในหน้าต่าง (ไม่รวมแถบดำ letterbox).
+    None = ภาพเต็มหน้าต่าง (โหมด windowed)."""
     cal = _module()
-    cal._state.display_w = int(display_w)
-    cal._state.display_h = int(display_h)
+    st = cal._state
+    st.display_w = int(display_w)
+    st.display_h = int(display_h)
+    if content_rect is not None:
+        st.content_x, st.content_y, st.content_w, st.content_h = (int(v) for v in content_rect)
+    else:
+        st.content_x = st.content_y = 0
+        st.content_w = int(display_w)
+        st.content_h = int(display_h)
 
 
 def prepare_frame(frame: np.ndarray) -> np.ndarray:

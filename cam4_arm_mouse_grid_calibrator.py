@@ -341,6 +341,13 @@ class CalibratorState:
         self.moved_for_pending = False  # ส่งแขนไปแล้วสำหรับ pending นี้ (ไม่ส่งซ้ำทุกเฟรม)
         self.display_w = 0
         self.display_h = 0
+        # ภาพจริงกินพื้นที่แค่ส่วนหนึ่งของหน้าต่าง (fullscreen letterbox: แถบดำซ้าย-ขวา/บน-ล่าง)
+        # ถ้าไม่หัก offset ออก พิกัดเมาส์จะเพี้ยน — ตอน cam4 (16:9 เท่าจอ) offset=0 เลยไม่เคยโผล่
+        # แต่กล้อง 4:3 บนจอ 16:9 จะเพี้ยนถึง ~240px = คาลิเบรตออกมาผิดทั้งชุด
+        self.content_x = 0      # ขอบซ้ายของภาพในหน้าต่าง (px)
+        self.content_y = 0
+        self.content_w = 0      # ขนาดภาพที่วาดจริง (0 = ไม่มีข้อมูล → ใช้ display_w/h ทั้งผืน)
+        self.content_h = 0
         self.test_data: Optional[Dict[str, Any]] = None
         self.reference_capture: Optional[np.ndarray] = None  # crop เซลล์ที่คลิก แสดงเป็นภาพอ้างอิง
         self.save_message_until = 0.0  # แสดง "Saved!" จนถึงเวลานี้ (time.time())
@@ -539,11 +546,18 @@ def _teaching_sim_target_near_origin(t_sec: float, state: "CalibratorState") -> 
 
 
 def _px_display_to_output(display_x: int, display_y: int) -> Tuple[float, float]:
-    """แมปพิกัดจากหน้าต่างแสดงผลไป output frame."""
+    """แมปพิกัดเมาส์จากหน้าต่างแสดงผล → พิกัดใน output frame.
+
+    หักพื้นที่ letterbox (แถบดำ) ออกก่อน: ตอน fullscreen ภาพถูก fit เข้าจอแล้ววางกลาง
+    → พิกัดเมาส์นับจากขอบ 'หน้าต่าง' ไม่ใช่ขอบ 'ภาพ'. ถ้าไม่หัก คลิกจะเพี้ยนตามขนาดแถบดำ
+    (cam4 16:9 บนจอ 16:9 → แถบ = 0 เลยไม่เคยเห็นบั๊ก; กล้อง 4:3 → เพี้ยน ~240px)
+    """
     if _state.display_w <= 0 or _state.display_h <= 0:
         return float(display_x), float(display_y)
-    x = display_x * _state.output_w / _state.display_w
-    y = display_y * _state.output_h / _state.display_h
+    cw = _state.content_w or _state.display_w
+    ch = _state.content_h or _state.display_h
+    x = (float(display_x) - _state.content_x) * _state.output_w / cw
+    y = (float(display_y) - _state.content_y) * _state.output_h / ch
     return max(0.0, min(_state.output_w - 1.0, x)), max(0.0, min(_state.output_h - 1.0, y))
 
 

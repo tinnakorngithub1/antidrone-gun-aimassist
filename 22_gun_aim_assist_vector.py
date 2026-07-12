@@ -152,6 +152,24 @@ try:
 except ImportError:
     cam4_pxdeg_calibrator_embed = None
 
+# ค่าที่ตั้งได้ในแอป (หน้า Settings) + ตัวช่วยคาลิเบรตอัตโนมัติตอนเปลี่ยนกล้อง
+try:
+    import runtime_config
+except ImportError:
+    runtime_config = None
+
+try:
+    import settings_screen
+except ImportError as _e:
+    settings_screen = None
+    print(f"⚠️ settings_screen ใช้ไม่ได้ ({_e}) — ปุ่ม S จะเป็นหน้า ballistics แบบเดิม")
+
+try:
+    import calib_wizard
+except ImportError as _e:
+    calib_wizard = None
+    print(f"⚠️ calib_wizard ใช้ไม่ได้ ({_e}) — ปุ่ม W (คาลิเบรตอัตโนมัติ) ถูกปิด")
+
 # Vector drive (px_per_degree + _variable_step_toward_target) from calibrator / HUD
 try:
     from cam4_arm_mouse_grid_calibrator import (
@@ -1494,7 +1512,8 @@ def get_screen_size():
 
 # ปุ่มเข้าโหมดตั้งค่า (แสดงบน HUD)
 KEY_ADJUST_CENTER = "C"
-KEY_SETTINGS = "S"
+KEY_SETTINGS = "S"        # หน้าตั้งค่า (settings_screen) — ทุกค่า ไม่ใช่แค่ ballistics
+KEY_WIZARD = "W"          # calibration wizard — คาลิเบรตกล้องใหม่ให้จบในแอป
 KEY_QUIT = "Q"
 KEY_PXDEG_CALIB = "G"
 KEY_CLASS_PREV = "["
@@ -2225,6 +2244,8 @@ def _gun_key_hint_parts():
     _white = (255, 255, 255)
     _gray = (180, 180, 180)
     parts = [
+        (f"[{KEY_WIZARD}]คาลิเบรต", (0, 220, 255)),
+        (f"[{KEY_SETTINGS}]ตั้งค่า", (0, 220, 255)),
         ("[M]map", _white),
         (f"[{KEY_PXDEG_CALIB}]px/deg", _white),
         ("[P]rearm", _white),
@@ -2232,7 +2253,6 @@ def _gun_key_hint_parts():
         ("[J]jog", _white),
         ("[I]sim", _white),
         (f"[{KEY_ADJUST_CENTER}]center", _white),
-        (f"[{KEY_SETTINGS}]ballistics", _white),
         (f"[{KEY_QUIT}]quit", _white),
     ]
     try:
@@ -4078,6 +4098,15 @@ def main():
     global CAM8_AUTO_ONLINE_BIAS_ENABLED
     runtime_cleanup = get_runtime_cleanup()
     runtime_cleanup.install()
+
+    # ค่าที่ operator แก้ในหน้า Settings ทับตัวแปร module-level ของไฟล์นี้ (fire gate, noise floor,
+    # YOLO conf, LOCK_ROI_SPAN_DEG ฯลฯ ซึ่งไม่ได้อยู่ใน config.py) — ต้องทำก่อนค่าพวกนี้
+    # ถูกก๊อปลง local ด้านล่าง. ฝั่ง config.py ทับไปแล้วตอน import
+    if runtime_config is not None:
+        _rc_mod = runtime_config.apply_to_module(globals())
+        if _rc_mod:
+            print(f"Gun Aim Assist: runtime override {len(_rc_mod)} ค่า -> " + ", ".join(_rc_mod))
+
     camera_name = CAMERA_NAME if CAMERA_NAME is not None else ACTIVE_CAMERA
     _set_active_camera_for_calibration(camera_name)
     cam_config = get_camera_config(camera_name)
@@ -4097,7 +4126,9 @@ def main():
     if calib_fatal:
         print(
             "❌ Gun Aim Assist: เรขาคณิตกล้องเชื่อถือไม่ได้ → AUTO/LOCK ถูกบล็อก "
-            "(MANUAL/SAFE ยังใช้ได้) จนกว่าจะคาลิเบรตให้ถูกกล้อง",
+            "(MANUAL/SAFE ยังใช้ได้) จนกว่าจะคาลิเบรตให้ถูกกล้อง\n"
+            f"   👉 กด [{KEY_WIZARD}] ในแอปเพื่อคาลิเบรตอัตโนมัติ "
+            "(แขนหมุนเอง วัด ppd/latency/noise ให้ — หันกล้องไปทางที่มีต้นไม้หรืออาคารก่อน)",
             flush=True,
         )
     fov_h = _geom["fov_h"] or cam_config.get("fov_horizontal", 60.0)
@@ -4823,30 +4854,88 @@ def main():
             "Btn0/Enter=confirm | H=log+home | R=recal | S=save | G/Esc=exit"
         )
 
+    def _reload_calibration(tag="CALIB"):
+        """โหลด ppd ใหม่จากดิสก์ แล้ว 'ไล่คำนวณทุกอย่างที่ derive จากมัน' ใหม่
+
+        ppd เป็นแหล่งความจริงเดียวของเรขาคณิตกล้อง → พอมันเปลี่ยน ต้องอัปเดตพร้อมกันทั้ง 3:
+          FOV (→ ระยะ → hit_radius/lead/slew guard), Kalman R (= (σ/ppd)²), boresight (องศา→px)
+        ถ้าอัปเดตไม่ครบ fire gate จะเพี้ยนแบบเงียบ ๆ
+        """
+        nonlocal arm_calibration_ready, px_per_deg_x, px_per_deg_y, fov_h, fov_v
+        _calib_path = _get_px_deg_path()
+        arm_calibration_ready = _calib_path.is_file()
+        px_per_deg_x, px_per_deg_y = _load_px_per_deg()
+        if px_per_deg_x is None or px_per_deg_y is None:
+            print(f"[{tag}] calib reloaded: {'OK' if arm_calibration_ready else 'MISSING'}")
+            return
+        config.set_ppd(px_per_deg_x, px_per_deg_y)
+        config.load()                      # boresight ของกล้องนี้ (องศา) → px ด้วย ppd ใหม่
+        _fh, _fv = fov_from_ppd(w, h, px_per_deg_x, px_per_deg_y)
+        if _fh and _fv:
+            fov_h, fov_v = _fh, _fv
+        _q, _r = lock_bearing_kalman_qr(px_per_deg_x)
+        lock_kalman.set_noise(q=_q, r=_r)
+        print(
+            f"[{tag}] calib reloaded: {'OK' if arm_calibration_ready else 'MISSING'} "
+            f"px=({px_per_deg_x:.1f},{px_per_deg_y:.1f}) "
+            f"fov=({fov_h:.1f}°,{fov_v:.1f}°) kalman_r={_r:.2e}"
+        )
+
     def _exit_pxdeg_calib(reload_calib=True):
-        nonlocal app_mode, arm_calibration_ready, px_per_deg_x, px_per_deg_y, fov_h, fov_v
+        nonlocal app_mode
         if cam4_pxdeg_calibrator_embed is not None and cam4_pxdeg_calibrator_embed.is_active():
             cam4_pxdeg_calibrator_embed.leave(WINDOW_NAME)
         app_mode = "normal"
         if reload_calib:
-            _calib_path = _get_px_deg_path()
-            arm_calibration_ready = _calib_path.is_file()
-            px_per_deg_x, px_per_deg_y = _load_px_per_deg()
-            if px_per_deg_x is not None and px_per_deg_y is not None:
-                # ppd เปลี่ยน → FOV, Kalman R และ boresight(องศา→px) ต้องตามไปด้วย
-                config.set_ppd(px_per_deg_x, px_per_deg_y)
-                _fh, _fv = fov_from_ppd(w, h, px_per_deg_x, px_per_deg_y)
-                if _fh and _fv:
-                    fov_h, fov_v = _fh, _fv
-                _q, _r = lock_bearing_kalman_qr(px_per_deg_x)
-                lock_kalman.set_noise(q=_q, r=_r)
-                print(
-                    f"[PXDEG] calib reloaded: {'OK' if arm_calibration_ready else 'MISSING'} "
-                    f"px=({px_per_deg_x:.1f},{px_per_deg_y:.1f}) "
-                    f"fov=({fov_h:.1f}°,{fov_v:.1f}°) kalman_r={_r:.2e}"
-                )
-            else:
-                print(f"[PXDEG] calib reloaded: {'OK' if arm_calibration_ready else 'MISSING'}")
+            _reload_calibration("PXDEG")
+
+    # ---------------- Calibration wizard (W) ----------------
+    def _wizard_detection_center():
+        """ป้อนศูนย์กลาง bbox ที่ track อยู่ให้ wizard ใช้วัด noise floor (σ ของ bbox jitter)"""
+        if lock_iou_tracker is None:
+            return None
+        cx_t, cy_t = lock_iou_tracker.smooth_cx, lock_iou_tracker.smooth_cy
+        if cx_t is None or cy_t is None or lock_iou_tracker.lost:
+            return None
+        return (float(cx_t), float(cy_t))
+
+    def _enter_wizard():
+        nonlocal app_mode
+        if calib_wizard is None:
+            print("[WIZARD] โมดูลไม่พร้อม")
+            return
+        if arm_controller is None:
+            print("[WIZARD] ต้องมีแขนกลต่ออยู่")
+            return
+        # wizard ขับแขนเอง → กัน AUTO/LOCK แย่งสั่ง
+        if arm_mode_manager is not None:
+            arm_mode_manager.set_mode(MODE_MANUAL)
+        calib_wizard.enter(WINDOW_NAME, camera_name, w, h, _wizard_detection_center)
+        app_mode = "wizard"
+        print("[WIZARD] ON — Space=รันขั้นตอน N/B=เปลี่ยนขั้น C=โหมดคลิก S=บันทึก W/Esc=ออก")
+
+    def _exit_wizard(reload_calib=True):
+        nonlocal app_mode
+        if calib_wizard is not None and calib_wizard.is_active():
+            calib_wizard.leave(WINDOW_NAME)
+        app_mode = "normal"
+        if reload_calib:
+            _reload_calibration("WIZARD")
+
+    # ---------------- Settings (S) ----------------
+    def _enter_settings():
+        nonlocal app_mode
+        if settings_screen is None:
+            app_mode = "settings"     # ถอยไปหน้า ballistics แบบเดิม
+            return
+        settings_screen.enter(WINDOW_NAME, camera_name, _config_mod, globals(), config)
+        app_mode = "settings2"
+
+    def _exit_settings():
+        nonlocal app_mode
+        if settings_screen is not None and settings_screen.is_active():
+            settings_screen.leave(WINDOW_NAME)
+        app_mode = "normal"
 
     print("Gun Aim Assist: starting camera stream (arm homing + YOLO ready)...")
     try:
@@ -5674,6 +5763,10 @@ def main():
                 draw_adjust_center_hud(frame, config, w, h)
             elif app_mode == "settings":
                 draw_settings_overlay(frame, config, settings_selected_field)
+            elif app_mode == "settings2" and settings_screen is not None:
+                frame = settings_screen.tick(frame)
+            elif app_mode == "wizard" and calib_wizard is not None:
+                frame = calib_wizard.tick(frame, arm_controller)
             elif app_mode == "cam8_mapping" and cam8_mapping_embed is not None:
                 frame8 = None
                 _cam8_status = "cam8 stream off"
@@ -6021,7 +6114,9 @@ def main():
 
             # Skip drive-verify / idle-probe during px/deg calib (arrow nudge 0.1° triggers false stall)
             # และระหว่าง JOG — กันไม่ให้ fault monitor วน re-home แย่งขณะผู้ใช้หมุนแขนแก้อาการค้าง
-            if app_mode not in ("cam4_pxdeg_calib", "jog"):
+            # โหมดที่ 'ขับแขนเอง' ต้องปิด fault monitor ไม่งั้นมันจะเห็นการขยับที่ไม่ได้สั่งจาก
+            # ลูปหลักแล้วนึกว่าแขนเสีย (wizard สั่งแขนกวาด/สะบัดเป็นเรื่องปกติ)
+            if app_mode not in ("cam4_pxdeg_calib", "jog", "wizard"):
                 if arm_controller is not None and hasattr(arm_controller, "maybe_verify_drive_motion"):
                     arm_controller.maybe_verify_drive_motion()
                 if arm_controller is not None and hasattr(arm_controller, "maybe_handle_arm_fault_recovery"):
@@ -6333,6 +6428,9 @@ def main():
                 y_off = (display_h - scaled_h) // 2
                 canvas[y_off : y_off + scaled_h, x_off : x_off + scaled_w] = display_frame
                 display_frame = canvas
+                # ภาพจริงอยู่แค่ในกรอบนี้ — ที่เหลือคือแถบดำ. ทุกอย่างที่รับคลิกต้องหักออก
+                # ไม่งั้นพิกัดเพี้ยน (cam4 16:9 บนจอ 16:9 → offset=0 บังเอิญรอด; กล้อง 4:3 → เพี้ยน)
+                display_content_rect = (x_off, y_off, scaled_w, scaled_h)
             else:
                 max_w = min(screen_w, DISPLAY_MAX_WIDTH)
                 max_h = min(screen_h, DISPLAY_MAX_HEIGHT)
@@ -6343,13 +6441,20 @@ def main():
                     display_frame = cv2.resize(frame, (display_w, display_h), interpolation=cv2.INTER_LINEAR)
                 else:
                     display_frame = frame
+                display_content_rect = (0, 0, display_w, display_h)
             try:
                 cv2.resizeWindow(WINDOW_NAME, display_w, display_h)
             except cv2.error:
                 pass
 
             if app_mode == "cam4_pxdeg_calib" and cam4_pxdeg_calibrator_embed is not None:
-                cam4_pxdeg_calibrator_embed.set_display_size(display_w, display_h)
+                cam4_pxdeg_calibrator_embed.set_display_size(
+                    display_w, display_h, display_content_rect
+                )
+            elif app_mode == "settings2" and settings_screen is not None:
+                settings_screen.set_display_size(display_w, display_h, display_content_rect)
+            elif app_mode == "wizard" and calib_wizard is not None:
+                calib_wizard.set_display_size(display_w, display_h, display_content_rect)
 
             # RTMP: rate-limited submit (operator view with HUD overlays)
             if _rtmp_streamer is not None:
@@ -6372,7 +6477,9 @@ def main():
                 if key in (ord("c"), ord("C")):
                     app_mode = "adjust_center"
                 elif key in (ord("s"), ord("S")):
-                    app_mode = "settings"
+                    _enter_settings()
+                elif key in (ord("w"), ord("W")):
+                    _enter_wizard()
                 # ปุ่ม R: แสดง/ซ่อนสถานะ calibration (pixel_to_degree) ของกล้องปัจจุบัน
                 elif key in (ord("r"), ord("R")):
                     show_calibration_status = not show_calibration_status
@@ -6544,6 +6651,24 @@ def main():
                 elif key in (13, 10):
                     config.save()
                     app_mode = "normal"
+            elif app_mode == "settings2" and settings_screen is not None:
+                _r = settings_screen.handle_key(key)
+                if _r == "exit":
+                    if settings_screen.is_dirty():
+                        print("[SETTINGS] ออกโดยไม่บันทึก — ค่าที่แก้ถูกทิ้ง (Ctrl+S เพื่อบันทึก)")
+                    _exit_settings()
+                elif _r in ("saved", "reset"):
+                    # ค่า live ถูก apply ไปแล้วตอนแก้; ที่ต้องทำคือ derive ค่าที่ผูกกับ ppd ใหม่
+                    # (เช่น แก้ LOCK_MEAS_SIGMA_PX → Kalman R ต้องคำนวณใหม่)
+                    if px_per_deg_x:
+                        _q2, _r2 = lock_bearing_kalman_qr(px_per_deg_x)
+                        lock_kalman.set_noise(q=_q2, r=_r2)
+            elif app_mode == "wizard" and calib_wizard is not None:
+                _r = calib_wizard.handle_key(key, arm_controller)
+                if _r == "exit":
+                    _exit_wizard(reload_calib=True)
+                elif _r == "saved":
+                    _reload_calibration("WIZARD")
             elif app_mode == "settings":
                 if key in (ord("1"),):
                     settings_selected_field = 0
@@ -6710,6 +6835,16 @@ def main():
         if cam4_pxdeg_calibrator_embed is not None and cam4_pxdeg_calibrator_embed.is_active():
             try:
                 cam4_pxdeg_calibrator_embed.leave(WINDOW_NAME)
+            except Exception:
+                pass
+        if settings_screen is not None and settings_screen.is_active():
+            try:
+                settings_screen.leave(WINDOW_NAME)
+            except Exception:
+                pass
+        if calib_wizard is not None and calib_wizard.is_active():
+            try:
+                calib_wizard.leave(WINDOW_NAME)
             except Exception:
                 pass
         cam.release()

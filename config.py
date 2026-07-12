@@ -683,6 +683,23 @@ def cam1_pixel_to_cam2_ptz_units(pixel_x, pixel_y, zoom_level=1.0, pan_offset_de
     return pan_units, tilt_units, zoom_units
 
 # ============================================================================
+# RUNTIME OVERRIDES (in-app settings)
+# ============================================================================
+# ค่าที่ operator แก้ในแอป (หน้า Settings) เก็บใน calibration_data/runtime_config.json
+# ทับค่าตั้งต้นด้านบน — ต้องทำ 'ตรงนี้' คือหลัง CAMERAS/ACTIVE_CAMERA ครบ แต่ก่อน flatten
+# ด้านล่าง (CAMERA_WIDTH/RTSP_URL/... คำนวณจาก CAMERAS[ACTIVE_CAMERA] ตอน import)
+# ลบไฟล์ JSON ทิ้ง = กลับสู่ค่าตั้งต้นในโค้ดทันที
+try:
+    import runtime_config as _runtime_config
+
+    _rc_applied = _runtime_config.apply_to_config(globals())
+    if _rc_applied:
+        print(f"config: runtime override {len(_rc_applied)} ค่า -> " + ", ".join(_rc_applied[:6])
+              + (" ..." if len(_rc_applied) > 6 else ""))
+except Exception as _e:   # ไม่มีไฟล์/พัง → ใช้ค่าตั้งต้น ไม่ทำให้โปรแกรมไม่ขึ้น
+    print(f"config: runtime_config ใช้ไม่ได้ ({_e}) — ใช้ค่าตั้งต้นจาก config.py")
+
+# ============================================================================
 # ACTIVE CAMERA CONFIGURATION (for backward compatibility)
 # ============================================================================
 # Get active camera config
