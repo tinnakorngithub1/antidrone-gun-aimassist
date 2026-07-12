@@ -73,7 +73,7 @@ class Field:
         self.help = help
 
 
-SECTIONS: List[str] = ["Camera", "Arm", "Detection", "Tracking", "Firing"]
+SECTIONS: List[str] = ["Camera", "Arm", "Detection", "Tracking", "Firing", "Sim"]
 
 SPEC: Dict[str, List[Field]] = {
     "Camera": [
@@ -88,8 +88,14 @@ SPEC: Dict[str, List[Field]] = {
               help="Must match the actual decoded stream size, not the datasheet number"),
         Field("height", "Height", "int", "camera", False, lo=240, hi=4320, step=90, unit="px"),
         Field("ego_comp_latency_sec", "Ego-comp latency", "float", "camera", True,
-              lo=0.0, hi=0.30, step=0.005, unit="s",
-              help="Camera latency (sensor to decode). Let the wizard measure it, do not guess"),
+              lo=0.0, hi=0.60, step=0.005, unit="s",
+              help="Camera latency + arm servo lag. Used to find the arm pose when the frame was "
+                   "captured. Let the wizard (W) measure it"),
+        Field("cam_latency_sec", "Camera latency (lead)", "float", "camera", True,
+              lo=0.0, hi=0.60, step=0.005, unit="s",
+              help="Camera latency ALONE (no servo lag). The target position we see is this old, "
+                   "so the lead prediction must compensate for it. Wrong here = aiming behind or "
+                   "ahead of the target. Let the wizard measure it"),
         Field("use_video_file", "Play from video file", "bool", "camera", False),
         Field("video_filename", "Video file", "str", "camera", False),
     ],
@@ -145,6 +151,23 @@ SPEC: Dict[str, List[Field]] = {
         Field("LOCK_PIPELINE_LATENCY_FALLBACK", "Pipeline latency fallback", "float", "global", True,
               lo=0.0, hi=0.5, step=0.01, unit="s",
               help="Only used until the runtime measures the real value"),
+    ],
+    "Sim": [
+        # โดรนจำลอง (กด I เปิด/ปิด) — ใช้ทดสอบเส้นทาง LOCK+ยิง โดยไม่ต้องมีโดรนจริง
+        # หมายเหตุ: ที่ >=50m fire gate ไม่เปิดเลย (ระบบยิงไม่ถึงจริง) ถ้าจะดูว่ามันยิงได้
+        # ให้ตั้งระยะ <=30m และความเร็ว <=2 deg/s
+        Field("LOCK_SIM_TARGET_RANGE_M", "Sim drone range", "float", "global", False,
+              lo=5, hi=300, step=5, unit="m",
+              help="Fires and hits 99-100% at <=30m. At >=50m the gate never opens (system "
+                   "genuinely cannot hit that far) - use <=30m to test the firing path"),
+        Field("LOCK_SIM_TARGET_OMEGA_DEG_S", "Sim drone speed", "float", "global", False,
+              lo=0.0, hi=30.0, step=0.5, unit="deg/s"),
+        Field("LOCK_SIM_TARGET_PATTERN", "Sim flight pattern", "enum", "global", False,
+              choices=["realistic", "sine", "hover", "figure8", "manual"]),
+        Field("LOCK_SIM_TARGET_SIZE_M", "Sim drone size", "float", "global", False,
+              lo=0.05, hi=2.0, step=0.05, unit="m"),
+        Field("LOCK_SIM_TARGET_MISS_RATE", "Sim detection miss rate", "float", "global", False,
+              lo=0.0, hi=0.9, step=0.05),
     ],
     "Firing": [
         Field("muzzle_velocity_ms", "Muzzle velocity", "float", "shooter", True,

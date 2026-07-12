@@ -3920,13 +3920,23 @@ def _tick_lock(ctx):
     _acc_mag = math.hypot(_acc_pan, _acc_tilt)
 
     # เล็งดักหน้า (lead) แทนวิ่งตาม: aim = pos + v·t + ½·a·t² (constant-acceleration ทำนายโค้ง)
-    #   lead_time = age + pipeline_latency (measurement เก่าเท่านี้) + actuation lead
+    #
+    # ⚠️ measurement เก่ากว่าที่โค้ดเคยคิดไว้มาก — ต้องนับ 'ความหน่วงของกล้อง' ด้วย:
+    #   avg_pipeline_latency = เวลา grab เฟรม -> YOLO คืนผล  (~50ms)
+    #   cam_latency_sec      = เวลาที่ 'แสง' ใช้เดินทางจากเซนเซอร์ -> network -> decode -> ถึงเรา
+    #                          (วัดได้จริง 377ms บน cam4: 4K H264 UDP @10fps บน Jetson)
+    # ของเดิมนับแค่ pipeline → ทำนายล่วงหน้าขาดไป 377ms → 'เล็งตามหลังเป้าตลอด'
+    # ที่เป้า 5°/s = ตามหลัง 1.9° ซึ่งใหญ่กว่า hit_radius ที่ 100m (0.20°) เกือบ 10 เท่า
+    # → ยิงไม่มีทางโดน และ fire gate ก็ปฏิเสธถูกแล้ว (uncert สูงเกิน)
+    # cam_latency ถูกใช้ที่เดียวก่อนหน้านี้: หาท่าแขนตอนเก็บภาพ (ego-comp) ซึ่งคนละเรื่องกัน
     pipe_lat = ctx.get("avg_pipeline_latency") or LOCK_PIPELINE_LATENCY_FALLBACK
+    cam_lat = float(ctx.get("cam_latency_sec", 0.0) or 0.0)
+    sense_lat = float(pipe_lat) + cam_lat      # ความเก่าจริงของ measurement ล่าสุด
     _lead_active = LOCK_LEAD_ENABLED and (coast_elapsed <= LOCK_LEAD_COAST_SWITCH_SEC)
     _lead_gain = 0.0   # diag (per-frame log): สัดส่วน lead ที่ใช้จริงหลัง velocity deadband
     base_pan = base_tilt = 0.0
     if _lead_active:
-        now_dt = coast_elapsed + float(pipe_lat)
+        now_dt = coast_elapsed + sense_lat
         lead_sec = now_dt + LOCK_LEAD_EXTRA_SEC
         base_pan, base_tilt = lock_kalman.predict_ahead(now_dt, decay_tau=None)   # ตำแหน่งปัจจุบันจริง
         aim_pan, aim_tilt = lock_kalman.predict_ahead(lead_sec, decay_tau=None)   # จุดดักหน้า (v·t)
@@ -4066,7 +4076,8 @@ def _tick_lock(ctx):
     # ความไม่แน่นอนของ intercept = 'ความคาดเดาไม่ได้ของเป้า' วัดจาก prediction residual จริง
     # (แม่นกว่าใช้ accel ที่ smooth): resid_rate (deg/s) × horizon = คาดว่าจะพลาดเพิ่มเท่านี้
     # เป้าหลบหลีก → resid_rate สูง → uncert สูง → 'ไม่ยิง' (แก้อาการโดนบ้างเฉียดบ้าง)
-    _horizon = float(pipe_lat) + fire_t_flight
+    # horizon ของ uncertainty ต้องนับความหน่วงกล้องด้วย (ยิ่งทำนายไกล ยิ่งไม่แน่นอน)
+    _horizon = sense_lat + fire_t_flight
     _uncert = (_lock_pred_resid_rate[0] * _horizon * LOCK_FIRE_PRED_UNCERT_K
                + LOCK_FIRE_CURVATURE_K * _acc_mag * _horizon * _horizon
                + LOCK_FIRE_NOISE_FLOOR_DEG)
@@ -4263,9 +4274,12 @@ def main():
     ego_comp_latency = float(
         cam_config.get("ego_comp_latency_sec", LOCK_EGO_COMP_LATENCY_SEC)
     )
+    # latency ของกล้องล้วน (ไม่รวม servo lag) — ใช้ทำนายชดเชย 'ความเก่าของตำแหน่งเป้า'
+    cam_latency = float(cam_config.get("cam_latency_sec", 0.0) or 0.0)
     print(
         f"Gun Aim Assist: {camera_name} geometry — ppd=({_geom['ppd_x']}, {_geom['ppd_y']}) "
-        f"fov=({fov_h:.1f}°, {fov_v:.1f}°) ego_lat={ego_comp_latency*1000:.0f}ms",
+        f"fov=({fov_h:.1f}°, {fov_v:.1f}°) ego_lat={ego_comp_latency*1000:.0f}ms "
+        f"cam_lat={cam_latency*1000:.0f}ms",
         flush=True,
     )
     # กำแพงระยะของ fire gate — ต้องเห็นตั้งแต่ startup ไม่ใช่มางงทีหลังว่าทำไมไม่ยิง
@@ -5604,6 +5618,10 @@ def main():
                         ) or config.effective_range_m,
                         "muzzle_velocity_ms": config.muzzle_velocity_ms,
                         "target_size_m": config.target_size_m,
+                        # ความหน่วงกล้องล้วน — ต้องนับใน horizon ของการทำนาย (ตำแหน่งเป้าเก่าไปเท่านี้)
+                        # ใช้ cam_latency ไม่ใช่ ego_comp_latency: ตัวหลังรวม servo lag ซึ่งไม่ได้
+                        # ทำให้ตำแหน่งเป้าเก่าลง ถ้าใส่รวมจะทำนายเกิน = เล็งล้ำหน้าเป้า
+                        "cam_latency_sec": cam_latency,
                         # ระยะที่ zero crosshair ไว้ → หัก drop ที่ระยะนั้นออก กันนับซ้ำ
                         "boresight_zero_range_m": config.boresight_zero_range_m,
                         # learned aim trim (สอนด้วยปุ่ม y จากผลยิงก่อนหน้า)
@@ -5916,9 +5934,22 @@ def main():
             elif app_mode == "settings":
                 draw_settings_overlay(frame, config, settings_selected_field)
             elif app_mode == "settings2" and settings_screen is not None:
-                frame = settings_screen.tick(frame)
+                try:
+                    frame = settings_screen.tick(frame)
+                except Exception as _se:
+                    import traceback
+                    print(f"❌ [SETTINGS] tick crashed: {_se}", flush=True)
+                    traceback.print_exc()
+                    _exit_settings()
             elif app_mode == "wizard" and calib_wizard is not None:
-                frame = calib_wizard.tick(frame, arm_controller)
+                # ครอบไว้: bug ในเครื่องมือคาลิเบรตต้องไม่ลากทั้งโปรแกรม (ที่คุมแขน+ปืน) ล้มไปด้วย
+                try:
+                    frame = calib_wizard.tick(frame, arm_controller)
+                except Exception as _we:
+                    import traceback
+                    print(f"❌ [WIZARD] tick crashed: {_we}", flush=True)
+                    traceback.print_exc()
+                    _exit_wizard(reload_calib=False)
             elif app_mode == "cam8_mapping" and cam8_mapping_embed is not None:
                 frame8 = None
                 _cam8_status = "cam8 stream off"
@@ -6722,8 +6753,11 @@ def main():
                 elif virtual_target is not None and key in (ord("v"), ord("V")):
                     print(f"[SIMDRONE] pattern -> {virtual_target.cycle_pattern()}")
                 elif virtual_target is not None and key in (ord("n"), ord("N")):
-                    # สลับระยะโดรน 50→100→150→200m (ระยะกำหนดขนาด+conf+ความเร็วเชิงมุม)
-                    _sim_ranges = [50.0, 100.0, 150.0, 200.0]
+                    # สลับระยะโดรนจำลอง — ต้องมีระยะใกล้ด้วย ไม่งั้นทดสอบ 'การยิง' ไม่ได้เลย
+                    # วัดใน sim (3 seed, floor 0.42): ยิง+โดน 99-100% ที่ <=30m แต่ >=50m gate
+                    # ไม่เปิดเลย (uncert > hit_r x K = ระบบยิงโดรนไกล ๆ ไม่ได้จริง gate จึงปฏิเสธ)
+                    # เดิมมีแค่ 50/100/150/200 = ไม่มีระยะไหนยิงได้เลย -> ดูเหมือนพัง ทั้งที่ทำงานถูก
+                    _sim_ranges = [10.0, 20.0, 30.0, 50.0, 100.0, 150.0, 200.0]
                     _cur_r = min(_sim_ranges, key=lambda r: abs(r - virtual_target.range_m))
                     _nxt_r = _sim_ranges[(_sim_ranges.index(_cur_r) + 1) % len(_sim_ranges)]
                     virtual_target.set_range(_nxt_r)
@@ -6816,7 +6850,13 @@ def main():
                         _q2, _r2 = lock_bearing_kalman_qr(px_per_deg_x)
                         lock_kalman.set_noise(q=_q2, r=_r2)
             elif app_mode == "wizard" and calib_wizard is not None:
-                _r = calib_wizard.handle_key(key, arm_controller)
+                try:
+                    _r = calib_wizard.handle_key(key, arm_controller)
+                except Exception as _we:
+                    import traceback
+                    print(f"❌ [WIZARD] handle_key crashed: {_we}", flush=True)
+                    traceback.print_exc()
+                    _r = "exit"
                 if _r == "exit":
                     _exit_wizard(reload_calib=True)
                 elif _r == "saved":

@@ -96,7 +96,9 @@ class _W:
     ppd_x: Optional[float] = None
     ppd_y: Optional[float] = None
     ppd_r2: Optional[Tuple[float, float]] = None
-    latency: Optional[float] = None
+    latency: Optional[float] = None      # รวม (กล้อง + servo) -> ego-comp
+    cam_latency: Optional[float] = None  # กล้องล้วน -> lead horizon
+    servo_lag: Optional[float] = None
     sigma_px: Optional[float] = None
     boresight: Optional[Tuple[float, float]] = None
 
@@ -129,6 +131,7 @@ def enter(window_name: str, camera_name: str, frame_w: int, frame_h: int,
     _W.busy = False
     _W.ppd_x = _W.ppd_y = _W.ppd_r2 = None
     _W.latency = _W.sigma_px = _W.boresight = None
+    _W.cam_latency = _W.servo_lag = None
     _W.click_mode = False
     _W.click_pts = []
     _W.pending_click = None
@@ -457,6 +460,20 @@ def _worker_latency(arm) -> None:
         _W.latency = best_L
         _say(f"OK ego_comp_latency = {best_L*1000:.0f} ms "
              f"(bearing sigma {math.sqrt(best_var):.3f}deg, {len(samples)} frames, contrast {contrast:.1f}x)")
+
+        # แยก servo lag ออก -> เหลือ latency ของ 'กล้อง' ล้วน ซึ่งคือค่าที่ lead horizon ต้องใช้
+        _say("measuring servo lag (arm only, no camera) ...")
+        _servo = _measure_servo_lag(arm)
+        if _servo is None:
+            _say("WARN cannot measure servo lag - camera latency assumed = ego_comp_latency")
+            _W.servo_lag = None
+            _W.cam_latency = best_L
+        else:
+            _W.servo_lag = _servo
+            _W.cam_latency = max(0.0, best_L - _servo)
+            _say(f"OK servo lag = {_servo*1000:.0f} ms  ->  camera latency = {_W.cam_latency*1000:.0f} ms")
+            _say(f"   ego-comp uses {best_L*1000:.0f} ms (total) | lead horizon uses "
+                 f"{_W.cam_latency*1000:.0f} ms (camera only)")
         if contrast < 2.0:
             _say("WARN flat curve (low contrast) - arm may not track the sine. Result unreliable")
     except Exception as e:
@@ -469,6 +486,51 @@ def _worker_latency(arm) -> None:
 # ---------------------------------------------------------------------------
 # STEP: noise floor
 # ---------------------------------------------------------------------------
+def _measure_servo_lag(arm) -> Optional[float]:
+    """หน่วงของแขนเอง (คำสั่ง -> ขยับจริง) วัดจาก GRBL ล้วน ไม่เกี่ยวกับกล้อง
+
+    ทำไมต้องแยก: ค่า L ที่วัดจากภาพ = latency กล้อง + servo lag (เพราะเทียบ 'ท่าที่สั่ง' กับภาพ)
+      - ego-comp ต้องการ L รวม  (ถามว่า 'ภาพนี้ตรงกับท่าที่สั่งเมื่อไร')
+      - lead horizon ต้องการเฉพาะ latency กล้อง (servo lag ไม่ได้ทำให้ 'ตำแหน่งเป้า' เก่าลง)
+    ใส่รวมเข้าไปใน lead = ทำนายเกิน → เล็งล้ำหน้าเป้า
+    """
+    lim = arm._effective_x_limits
+    amp = min(LAT_AMP_DEG, (lim[1] - lim[0]) / 2.0 - 1.0)
+    arm.move_absolute(0.0, 0.0, blocking=True)
+    time.sleep(0.4)
+    samples: List[Tuple[float, float, float]] = []   # (t, ที่สั่ง, ที่จริง)
+    t0 = time.time()
+    while time.time() - t0 < LAT_DURATION_SEC:
+        tt = time.time() - t0
+        tgt = amp * math.sin(2.0 * math.pi * LAT_FREQ_HZ * tt)
+        arm.move_absolute(tgt, 0.0, blocking=False)
+        cmd = tgt
+        try:
+            arm.sync_position_from_grbl()       # อ่านตำแหน่ง 'จริง' กลับจาก GRBL (WPos)
+            actual = float(arm.pos_x)
+        except Exception:
+            actual = float("nan")
+        if actual == actual:
+            samples.append((time.time(), cmd, actual))
+        time.sleep(0.02)
+    arm.move_absolute(0.0, 0.0, blocking=True)
+    if len(samples) < 30:
+        return None
+    ts = np.array([s[0] for s in samples]) - samples[0][0]
+    cmd = np.array([s[1] for s in samples])
+    act = np.array([s[2] for s in samples])
+    if float(np.ptp(act)) < 0.5:
+        return None                              # แขนไม่ขยับจริง
+    # หา lag ที่ทำให้ 'ท่าที่สั่งเมื่อ lag ที่แล้ว' ตรงกับ 'ท่าจริงตอนนี้' มากที่สุด
+    best_l, best_e = 0.0, None
+    for L in np.arange(0.0, 0.401, 0.005):
+        pred = np.interp(ts - L, ts, cmd)
+        e = float(np.mean((pred - act) ** 2))
+        if best_e is None or e < best_e:
+            best_e, best_l = e, float(L)
+    return best_l
+
+
 def _worker_noise(arm) -> None:
     try:
         if _W.get_detection_center is None:
@@ -624,6 +686,8 @@ def save_all() -> List[str]:
             data = rc.load()
             if _W.latency is not None:
                 data.setdefault("cameras", {}).setdefault(_W.camera, {})["ego_comp_latency_sec"] = round(_W.latency, 4)
+            if _W.cam_latency is not None:
+                data.setdefault("cameras", {}).setdefault(_W.camera, {})["cam_latency_sec"] = round(_W.cam_latency, 4)
             if _W.sigma_px is not None:
                 data.setdefault("globals", {})["LOCK_MEAS_SIGMA_PX"] = round(_W.sigma_px, 2)
             if rc.save(data):
@@ -691,7 +755,7 @@ def _draw(frame: np.ndarray) -> None:
         ht.put_text(frame, val, (x0 + int(240 * s), yy), fs, col, th)
         yy += int(26 * s)
 
-    if _W.ppd_x:
+    if _W.ppd_x and _W.ppd_y:
         fh = _W.frame_w / abs(_W.ppd_x)
         fv = _W.frame_h / abs(_W.ppd_y)
         row("ppd (px/deg)", f"{_W.ppd_x:.2f} / {_W.ppd_y:.2f}", C_OK)

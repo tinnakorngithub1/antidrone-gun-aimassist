@@ -390,8 +390,13 @@ CAMERAS = {
         # ค่าที่ใช้จริงตอนรัน derive จาก ppd โดยตรง (ดู _effective_fov_deg) — ค่าที่นี่เป็น fallback
         "fov_horizontal": 44.1,  # องศา = 3840 / 87.138
         "fov_vertical": 24.1,    # องศา = 2160 / 89.734
-        # latency กล้อง (sensor→network→decode) สำหรับ ego-comp — ต้องวัดต่อกล้อง (ดู checklist)
+        # ego_comp_latency = latency กล้อง + servo lag ของแขน (ใช้หาท่าแขนตอนเก็บภาพ)
         "ego_comp_latency_sec": 0.06,
+        # cam_latency = latency ของ 'กล้องล้วน' (sensor→network→decode) ไม่รวม servo lag
+        # ใช้ใน lead horizon: ตำแหน่งเป้าที่เห็นเก่าไปเท่านี้ ต้องทำนายชดเชย
+        # (servo lag ไม่ได้ทำให้ตำแหน่งเป้าเก่าลง → ใส่รวมเข้าไปจะทำนายเกิน = เล็งล้ำหน้า)
+        # 0 = ยังไม่ได้วัด (กด W) → lead ไม่ชดเชยส่วนนี้ = พฤติกรรมเดิม
+        "cam_latency_sec": 0.0,
         # ไม่มี zoom - ไม่ต้องใส่ zoom parameters
     },
     "cam5": {
