@@ -286,7 +286,7 @@ LOCAL_CAMERAS = {
         "zoom_max": 25.0,
     },
     # cam3_rgb = เลนส์ RGB/optical ของกล้องตัวเดียวกับ cam3_thermal (channels/101, 2688x1520 h265 25fps)
-    #   ผู้สมัครแทน cam4. FOV = PROVISIONAL (±30% เดาจากเทียบ thermal) — ต้อง calibrate จริง:
+    #   FOV คำนวณจาก homography × thermal ppd จริง (ppd RGB ≈55.4/56.6) — ยืนยันด้วย arm grid ทีหลัง:
     #   python3 cam8_arm_grid_calibrator_4.py --cam-bottom cam3_rgb → cam3_rgb_pixel_per_degree.json
     "cam3_rgb": {
         "name": "cam3_rgb",
@@ -299,8 +299,8 @@ LOCAL_CAMERAS = {
         "udp_port": 554,
         "use_udp_direct": True,
         "stream_format": "h265",
-        "fov_horizontal": 34.0,   # PROVISIONAL
-        "fov_vertical": 19.2,     # PROVISIONAL
+        "fov_horizontal": 48.6,   # = 2688/55.4 (homography-derived)
+        "fov_vertical": 26.9,     # = 1520/56.6
     },
     "cam4": {
         "name": "cam4",

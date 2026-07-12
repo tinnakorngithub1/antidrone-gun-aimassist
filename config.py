@@ -395,13 +395,13 @@ CAMERAS = {
         "display_max_width": None,
         "display_max_height": None,
         "horizon_file": "horizon_poly_cam3_rgb.npy",
-        # ⚠️ PROVISIONAL — ยังไม่ได้ calibrate จริง!
-        #   ค่านี้เดาจากการเทียบ feature กับภาพ thermal (±30%) ใช้เป็น fallback เท่านั้น
-        #   ต้องรัน: python3 cam8_arm_grid_calibrator_4.py --cam-bottom cam3_rgb
-        #   เพื่อให้ได้ cam3_rgb_pixel_per_degree.json แล้วอัปเดต fov = width/|ppd| ที่นี่
-        #   (ระบบเล็งจะใช้ ppd ที่ calibrate ทันทีที่มีไฟล์ — ค่านี้แค่กันพัง)
-        "fov_horizontal": 34.0,   # PROVISIONAL (≈ 2688/79)
-        "fov_vertical": 19.2,     # PROVISIONAL (= 34.0 * 1520/2688)
+        # FOV คำนวณจาก cam3_rgb_thermal_homography.json × thermal ppd ที่วัดจริง:
+        #   thermal warp เข้า RGB ด้วย scale x=1.053 y=1.312
+        #   → RGB ppd = 52.556*1.053 = 55.4 , 43.134*1.312 = 56.6  (ppd x≈y = พิกเซลจตุรัส → เชื่อได้)
+        #   → fov = width/ppd. ยังควรยืนยันด้วย arm grid (ค่าเล็งจริง):
+        #   python3 cam8_arm_grid_calibrator_4.py --cam-bottom cam3_rgb → cam3_rgb_pixel_per_degree.json
+        "fov_horizontal": 48.6,   # = 2688/55.4  (homography-derived)
+        "fov_vertical": 26.9,     # = 1520/56.6
         # latency ยังไม่วัด — กด W (wizard) บนเครื่องจริงเพื่อวัด แล้วเติม
         # "ego_comp_latency_sec"/"cam_latency_sec" เหมือน cam4 (25fps น่าจะหน่วงน้อยกว่า cam4 10fps)
     },

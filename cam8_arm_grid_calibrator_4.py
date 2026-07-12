@@ -143,7 +143,7 @@ CALIB_LOCAL_CAMERAS: Dict[str, Dict[str, Any]] = {
         "zoom_max": 25.0,
     },
     # cam3_rgb = เลนส์ RGB ของกล้องตัวเดียวกับ cam3_thermal (channels/101, 2688x1520 h265 25fps)
-    #   FOV = PROVISIONAL — calibrate ตัวนี้ด้วย: --cam-bottom cam3_rgb (→ cam3_rgb_pixel_per_degree.json)
+    #   FOV จาก homography × thermal ppd จริง (ppd ≈55.4/56.6); ยืนยันด้วย: --cam-bottom cam3_rgb
     "cam3_rgb": {
         "name": "cam3_rgb",
         "width": 2688,
@@ -155,8 +155,8 @@ CALIB_LOCAL_CAMERAS: Dict[str, Dict[str, Any]] = {
         "udp_port": 554,
         "use_udp_direct": True,
         "stream_format": "h265",
-        "fov_horizontal": 34.0,   # PROVISIONAL
-        "fov_vertical": 19.2,     # PROVISIONAL
+        "fov_horizontal": 48.6,   # = 2688/55.4 (homography-derived)
+        "fov_vertical": 26.9,     # = 1520/56.6
     },
     "cam4": {
         "name": "cam4",
