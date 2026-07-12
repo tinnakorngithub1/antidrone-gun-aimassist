@@ -2243,9 +2243,10 @@ def _gun_key_hint_parts():
     """Compact key-hint segments for status HUD row."""
     _white = (255, 255, 255)
     _gray = (180, 180, 180)
+    # แถบนี้วาดด้วย cv2.putText (ASCII เท่านั้น) — ห้ามใส่ไทย ไม่งั้นออกมาเป็น '?'
     parts = [
-        (f"[{KEY_WIZARD}]คาลิเบรต", (0, 220, 255)),
-        (f"[{KEY_SETTINGS}]ตั้งค่า", (0, 220, 255)),
+        (f"[{KEY_WIZARD}]calib", (0, 220, 255)),
+        (f"[{KEY_SETTINGS}]config", (0, 220, 255)),
         ("[M]map", _white),
         (f"[{KEY_PXDEG_CALIB}]px/deg", _white),
         ("[P]rearm", _white),

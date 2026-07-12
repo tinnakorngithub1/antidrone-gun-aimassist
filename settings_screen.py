@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
+import hud_text as ht
 import numpy as np
 
 import runtime_config as rc
@@ -286,21 +287,21 @@ def tick(frame: np.ndarray) -> np.ndarray:
 
     # หัวเรื่อง
     yy = y0 + int(46 * s)
-    cv2.putText(frame, f"SETTINGS  —  {_camera_name}", (x0 + int(24 * s), yy),
-                FONT, 0.85 * s, C_TEXT, max(1, int(2 * s)), cv2.LINE_AA)
+    ht.put_text(frame, f"SETTINGS  —  {_camera_name}", (x0 + int(24 * s), yy),
+                0.85 * s, C_TEXT, max(1, int(2 * s)))
 
     # แท็บ
     yy += int(34 * s)
     tx = x0 + int(24 * s)
     tab_h = int(34 * s)
     for i, sec in enumerate(rc.SECTIONS):
-        (tw, _th), _base = cv2.getTextSize(sec, FONT, fs, th)
+        tw, _th = ht.text_size(sec, fs, th)
         bw = tw + int(28 * s)
         sel = (i == _section_idx)
         cv2.rectangle(frame, (tx, yy), (tx + bw, yy + tab_h),
                       C_SEL if sel else C_PANEL, -1)
-        cv2.putText(frame, sec, (tx + int(14 * s), yy + int(23 * s)),
-                    FONT, fs, (20, 20, 20) if sel else C_DIM, th, cv2.LINE_AA)
+        ht.put_text(frame, sec, (tx + int(14 * s), yy + int(23 * s)),
+                    fs, (20, 20, 20) if sel else C_DIM, th)
         _hitboxes.append((tx, yy, tx + bw, yy + tab_h, "section", i))
         tx += bw + int(8 * s)
 
@@ -323,8 +324,7 @@ def tick(frame: np.ndarray) -> np.ndarray:
 
         col = C_TEXT if sel else C_DIM
         tag = "" if f.live else " [RESTART]"
-        cv2.putText(frame, f"{i+1}. {f.label}{tag}", (label_x, ry + int(22 * s)),
-                    FONT, fs, col if f.live else C_WARN, th, cv2.LINE_AA)
+        ht.put_text(frame, f"{i+1}. {f.label}{tag}", (label_x, ry + int(22 * s)), fs, col if f.live else C_WARN, th)
 
         # ค่า (โหมดพิมพ์ = โชว์ buffer + เคอร์เซอร์)
         if sel and _editing_text:
@@ -333,41 +333,38 @@ def tick(frame: np.ndarray) -> np.ndarray:
         else:
             vtxt = _fmt(f, _current_value(f))
             vcol = C_OK if rc.get_override(_data, f, _camera_name) is not None else col
-        cv2.putText(frame, vtxt, (val_x + btn_w + int(14 * s), ry + int(22 * s)),
-                    FONT, fs, vcol, th, cv2.LINE_AA)
+        ht.put_text(frame, vtxt, (val_x + btn_w + int(14 * s), ry + int(22 * s)), fs, vcol, th)
 
         if sel and not _editing_text:
             # ปุ่ม -/+ (คลิกได้) สำหรับค่าที่ nudge ได้
             if f.kind in ("int", "float", "bool", "enum", "pair"):
                 cv2.rectangle(frame, (val_x, ry), (val_x + btn_w, ry + int(28 * s)), C_SEL, -1)
-                cv2.putText(frame, "-", (val_x + int(12 * s), ry + int(21 * s)),
-                            FONT, fs, (20, 20, 20), th, cv2.LINE_AA)
+                ht.put_text(frame, "-", (val_x + int(12 * s), ry + int(21 * s)),
+                            fs, (20, 20, 20), th)
                 _hitboxes.append((val_x, ry, val_x + btn_w, ry + int(28 * s), "dec", i))
                 bx = x1 - int(28 * s) - btn_w
                 cv2.rectangle(frame, (bx, ry), (bx + btn_w, ry + int(28 * s)), C_SEL, -1)
-                cv2.putText(frame, "+", (bx + int(10 * s), ry + int(21 * s)),
-                            FONT, fs, (20, 20, 20), th, cv2.LINE_AA)
+                ht.put_text(frame, "+", (bx + int(10 * s), ry + int(21 * s)),
+                            fs, (20, 20, 20), th)
                 _hitboxes.append((bx, ry, bx + btn_w, ry + int(28 * s), "inc", i))
             if f.kind in ("str", "int", "float"):
                 ex = x1 - int(28 * s) - btn_w - int(90 * s)
                 cv2.rectangle(frame, (ex, ry), (ex + int(80 * s), ry + int(28 * s)), C_PANEL, -1)
-                cv2.putText(frame, "พิมพ์", (ex + int(8 * s), ry + int(21 * s)),
-                            FONT, fs_sm, C_TEXT, th, cv2.LINE_AA)
+                ht.put_text(frame, "พิมพ์", (ex + int(8 * s), ry + int(21 * s)), fs_sm, C_TEXT, th)
                 _hitboxes.append((ex, ry, ex + int(80 * s), ry + int(28 * s), "edit", i))
 
     # help ของฟิลด์ที่เลือก
     cur = _fields()[_field_idx] if _fields() else None
     by = y1 - int(78 * s)
     if cur is not None and cur.help:
-        cv2.putText(frame, cur.help, (label_x, by), FONT, fs_sm, C_DIM, th, cv2.LINE_AA)
+        ht.put_text(frame, cur.help, (label_x, by), fs_sm, C_DIM, th)
 
     # สถานะ + คีย์
     if _status_msg:
-        cv2.putText(frame, _status_msg, (label_x, by + int(24 * s)),
-                    FONT, fs_sm, _status_color, th, cv2.LINE_AA)
-    hint = ("↑↓ เลือก  ←→ ปรับค่า  E/Enter พิมพ์  Tab เปลี่ยนแท็บ  "
-            "F5 ค่าตั้งต้น  Ctrl+S บันทึก  Esc ทิ้ง")
-    cv2.putText(frame, hint, (label_x, y1 - int(20 * s)), FONT, fs_sm, C_DIM, th, cv2.LINE_AA)
+        ht.put_text(frame, _status_msg, (label_x, by + int(24 * s)), fs_sm, _status_color, th)
+    hint = ("ลูกศรขึ้น/ลง = เลือกฟิลด์   ลูกศรซ้าย/ขวา = ปรับค่า   E หรือ Enter = พิมพ์ค่า   "
+            "Tab = เปลี่ยนแท็บ   F5 = คืนค่าตั้งต้น   Ctrl+S = บันทึก   Esc = ออกโดยไม่บันทึก")
+    ht.put_text(frame, hint, (label_x, y1 - int(20 * s)), fs_sm, C_DIM, th)
     return frame
 
 

@@ -13,9 +13,10 @@ Calibration Wizard — คาลิเบรตกล้องใหม่ให
   ppd      : แขนหมุนเป็นองศาที่รู้ค่า (อ่านกลับจาก GRBL) → วัดว่าภาพเลื่อนกี่พิกเซล
              (cv2.phaseCorrelate) → fit เส้นตรง shift_px = -ppd × Δdeg ด้วย lstsq
              ใช้ได้เมื่อฉากมี texture (ต้นไม้/อาคาร). ท้องฟ้าเปล่า → ถอยไปโหมดคลิก
-  latency  : แขนสะบัดกลับไปกลับมา (ω เปลี่ยนเครื่องหมาย) ระหว่างนั้น 'ทิศจริง' ของฉากนิ่ง
-             ต้องคงที่ → หา L ที่ทำให้ pose_at(t−L) + px_offset/ppd แปรปรวนน้อยสุด
-             *ต้องสะบัด* — ถ้าหมุนอัตราคงที่ L จะหาไม่ได้ (มันกลายเป็นค่าคงที่ ไม่กระทบ variance)
+  latency  : แขนแกว่งเป็นไซน์ (ω เปลี่ยนต่อเนื่อง) ระหว่างนั้น 'ทิศจริง' ของฉากนิ่งต้องคงที่
+             → หา L ที่ทำให้ pose_at(t−L) + px_offset/ppd แปรปรวนน้อยสุด
+             *ω ต้องเปลี่ยน* — หมุนอัตราคงที่จะหา L ไม่ได้เลย (พจน์ ω·(L_จริง−L) กลายเป็น
+             ค่าคงที่ ไม่กระทบ variance)
   noise    : แขนนิ่ง จับเป้า → σ ของ bbox center (หักการดริฟท์เชิงเส้นออกก่อน)
   boresight: วัดเองไม่ได้ — ความจริงอยู่นอกระบบกล้อง+แขน (ลำกล้องชี้ไปไหนจริง) ต้องมีคนชี้
 
@@ -32,6 +33,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import cv2
+import hud_text as ht
 import numpy as np
 
 _DIR = Path(__file__).resolve().parent
@@ -640,8 +642,8 @@ def _draw(frame: np.ndarray) -> None:
     cv2.rectangle(frame, (x0, y0), (x1, y1), C_ACC, max(1, int(2 * s)))
 
     yy = y0 + int(40 * s)
-    cv2.putText(frame, f"CALIBRATION WIZARD — {_W.camera}", (x0 + int(18 * s), yy),
-                FONT, 0.78 * s, C_TEXT, max(1, int(2 * s)), cv2.LINE_AA)
+    ht.put_text(frame, f"CALIBRATION WIZARD — {_W.camera}", (x0 + int(18 * s), yy),
+                0.78 * s, C_TEXT, max(1, int(2 * s)))
 
     # แถบขั้นตอน
     yy += int(32 * s)
@@ -651,16 +653,16 @@ def _draw(frame: np.ndarray) -> None:
                (i == 3 and _W.sigma_px is not None) or (i == 4 and _W.boresight)
         col = C_OK if done else (C_ACC if i == _W.step else C_DIM)
         txt = f"{i}.{name}"
-        cv2.putText(frame, txt, (tx, yy), FONT, fs * 0.9, col, th, cv2.LINE_AA)
-        (tw, _th), _base = cv2.getTextSize(txt, FONT, fs * 0.9, th)
+        ht.put_text(frame, txt, (tx, yy), fs * 0.9, col, th)
+        tw, _th = ht.text_size(txt, fs * 0.9, th)
         tx += tw + int(14 * s)
 
     # ผลลัพธ์
     yy += int(34 * s)
     def row(label, val, col=C_TEXT):
         nonlocal yy
-        cv2.putText(frame, label, (x0 + int(18 * s), yy), FONT, fs, C_DIM, th, cv2.LINE_AA)
-        cv2.putText(frame, val, (x0 + int(240 * s), yy), FONT, fs, col, th, cv2.LINE_AA)
+        ht.put_text(frame, label, (x0 + int(18 * s), yy), fs, C_DIM, th)
+        ht.put_text(frame, val, (x0 + int(240 * s), yy), fs, col, th)
         yy += int(26 * s)
 
     if _W.ppd_x:
@@ -684,15 +686,13 @@ def _draw(frame: np.ndarray) -> None:
     for line in _W.log[-9:]:
         col = C_ERR if line.startswith("✗") else (C_OK if line.startswith("✓") else
               (C_WARN if line.startswith("⚠") else C_DIM))
-        cv2.putText(frame, line[:78], (x0 + int(18 * s), yy), FONT, fs * 0.82, col, th, cv2.LINE_AA)
+        ht.put_text(frame, line[:78], (x0 + int(18 * s), yy), fs * 0.82, col, th)
         yy += int(22 * s)
 
     # คำสั่ง
     hint = _step_hint()
-    cv2.putText(frame, hint, (x0 + int(18 * s), y1 - int(44 * s)),
-                FONT, fs * 0.85, C_WARN if _W.busy else C_TEXT, th, cv2.LINE_AA)
-    cv2.putText(frame, "Space=รัน  N=ถัดไป  B=ย้อน  C=สลับโหมดคลิก  S=บันทึก  Esc/W=ออก",
-                (x0 + int(18 * s), y1 - int(18 * s)), FONT, fs * 0.78, C_DIM, th, cv2.LINE_AA)
+    ht.put_text(frame, hint, (x0 + int(18 * s), y1 - int(44 * s)), fs * 0.85, C_WARN if _W.busy else C_TEXT, th)
+    ht.put_text(frame, "Space=รัน  N=ถัดไป  B=ย้อน  C=สลับโหมดคลิก  S=บันทึก  Esc/W=ออก", (x0 + int(18 * s), y1 - int(18 * s)), fs * 0.78, C_DIM, th)
 
     # crosshair (โหมดคลิก/boresight ต้องเล็งกลางจอ)
     if _W.step in (1, 4):
@@ -712,7 +712,7 @@ def _step_hint() -> str:
             return f"โหมดคลิก: คลิกจุดเด่นในภาพ (มี {len(_W.click_pts)} จุด) → Enter=fit  |  C=กลับโหมดออโต้"
         return "Space = วัด ppd อัตโนมัติ (แขนจะกวาด ±9°)  |  C = ถ้าฉากไม่มี texture ใช้โหมดคลิก"
     if _W.step == 2:
-        return "Space = วัด ego latency (แขนจะสะบัด ±4° สองสามรอบ)"
+        return f"Space = วัด ego latency (แขนจะแกว่งเป็นไซน์ ±{LAT_AMP_DEG:.0f}° นาน {LAT_DURATION_SEC:.0f} วิ)"
     if _W.step == 3:
         return "เล็งให้เป้าอยู่ในภาพ + LOCK ติด แล้ว Space = วัด noise (แขนต้องนิ่ง)"
     if _W.step == 4:
