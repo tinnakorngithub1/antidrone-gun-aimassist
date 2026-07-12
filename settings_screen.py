@@ -251,23 +251,37 @@ def _on_mouse(event, x, y, flags, param) -> None:
     fy = (float(y) - cy) / ch
     if not (0.0 <= fx <= 1.0 and 0.0 <= fy <= 1.0):
         return
-    for (x0, y0, x1, y1, kind, payload) in _hitboxes:
-        if x0 <= fx * _hb_w <= x1 and y0 <= fy * _hb_h <= y1:
-            if kind == "section":
-                _section_idx = payload
-                _field_idx = 0
-            elif kind == "field":
-                _field_idx = payload
-            elif kind == "dec":
-                _field_idx = payload
-                _nudge(_fields()[payload], -1)
-            elif kind == "inc":
-                _field_idx = payload
-                _nudge(_fields()[payload], +1)
-            elif kind == "edit":
-                _field_idx = payload
-                _begin_text_edit(_fields()[payload])
-            return
+    mx = fx * _hb_w
+    my = fy * _hb_h
+
+    # ปุ่ม -/+/type อยู่ 'ข้างใน' กรอบเลือกแถว (ซึ่งคลุมทั้งแถว) → ต้องเช็คปุ่มก่อนเสมอ
+    # ไม่งั้นคลิกปุ่มจะไปโดนกรอบแถวก่อนแล้ว return = แค่เลือกแถว ไม่ได้ปรับค่า
+    def _hit(kinds):
+        for (x0, y0, x1, y1, kind, payload) in _hitboxes:
+            if kind in kinds and x0 <= mx <= x1 and y0 <= my <= y1:
+                return kind, payload
+        return None, None
+
+    kind, payload = _hit(("dec", "inc", "edit"))
+    if kind is None:
+        kind, payload = _hit(("section", "field"))
+    if kind is None:
+        return
+
+    if kind == "section":
+        _section_idx = payload
+        _field_idx = 0
+    elif kind == "field":
+        _field_idx = payload
+    elif kind == "dec":
+        _field_idx = payload
+        _nudge(_fields()[payload], -1)
+    elif kind == "inc":
+        _field_idx = payload
+        _nudge(_fields()[payload], +1)
+    elif kind == "edit":
+        _field_idx = payload
+        _begin_text_edit(_fields()[payload])
 
 
 _hb_w = _hb_h = 1   # ขนาดเฟรมตอนวาด hitbox ล่าสุด
@@ -323,7 +337,7 @@ def tick(frame: np.ndarray) -> np.ndarray:
     row_h = int(38 * s)
     label_x = x0 + int(28 * s)
     val_x = x0 + int((x1 - x0) * 0.46)
-    btn_w = int(34 * s)
+    btn_w = int(52 * s)      # ใหญ่พอให้กดด้วยเมาส์บนจอจริงได้สบาย
 
     for i, f in enumerate(_fields()):
         sel = (i == _field_idx)
@@ -351,15 +365,15 @@ def tick(frame: np.ndarray) -> np.ndarray:
         if sel and not _editing_text:
             # ปุ่ม -/+ (คลิกได้) สำหรับค่าที่ nudge ได้
             if f.kind in ("int", "float", "bool", "enum", "pair"):
-                cv2.rectangle(frame, (val_x, ry), (val_x + btn_w, ry + int(28 * s)), C_SEL, -1)
+                cv2.rectangle(frame, (val_x, ry), (val_x + btn_w, ry + int(30 * s)), C_SEL, -1)
                 ht.put_text(frame, "-", (val_x + int(12 * s), ry + int(21 * s)),
                             fs, (20, 20, 20), th)
-                _hitboxes.append((val_x, ry, val_x + btn_w, ry + int(28 * s), "dec", i))
+                _hitboxes.append((val_x, ry, val_x + btn_w, ry + int(30 * s), "dec", i))
                 bx = x1 - int(28 * s) - btn_w
-                cv2.rectangle(frame, (bx, ry), (bx + btn_w, ry + int(28 * s)), C_SEL, -1)
+                cv2.rectangle(frame, (bx, ry), (bx + btn_w, ry + int(30 * s)), C_SEL, -1)
                 ht.put_text(frame, "+", (bx + int(10 * s), ry + int(21 * s)),
                             fs, (20, 20, 20), th)
-                _hitboxes.append((bx, ry, bx + btn_w, ry + int(28 * s), "inc", i))
+                _hitboxes.append((bx, ry, bx + btn_w, ry + int(30 * s), "inc", i))
             if f.kind in ("str", "int", "float"):
                 ex = x1 - int(28 * s) - btn_w - int(90 * s)
                 cv2.rectangle(frame, (ex, ry), (ex + int(80 * s), ry + int(28 * s)), C_PANEL, -1)
