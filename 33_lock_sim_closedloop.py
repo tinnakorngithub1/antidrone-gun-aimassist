@@ -173,8 +173,10 @@ def run_lock_sim(
     ppd_y=-89.73,
     frame_w=3840,
     frame_h=2160,
-    fov_h=60.0,
-    fov_v=36.0,
+    # FOV ต้องสอดคล้องกับ ppd (fov = frame/ppd) — เดิมตั้ง 60/36 ตามสเปคเลนส์ ซึ่งขัดกับ ppd
+    # ที่ตั้งไว้บรรทัดบน → sim คำนวณระยะคนละชุดกับที่ ppd บอก
+    fov_h=3840 / 87.14,   # 44.07°
+    fov_v=2160 / 89.73,   # 24.07°
     seed=12345,
     warmup=1.0,
     verbose=False,
@@ -200,7 +202,8 @@ def run_lock_sim(
 
     # --- production objects ตัวจริง ---
     tracker = gaa._SimpleIoUTracker()
-    lock_kalman = gaa._TargetKalman(q=gaa.LOCK_BEARING_KALMAN_Q, r=gaa.LOCK_BEARING_KALMAN_R)
+    _q, _r = gaa.lock_bearing_kalman_qr(ppd_x)
+    lock_kalman = gaa._TargetKalman(q=_q, r=_r)
     pose_hist = gaa._ArmPoseHistory()
     drive_state = gaa._ArmDriveState()
     drive_state.continuous_target_time_prev = -0.05  # init (main() ทำแบบนี้เช่นกัน)

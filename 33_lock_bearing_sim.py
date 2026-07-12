@@ -128,7 +128,7 @@ def run_scenario(name, drone, duration=30.0, latency=0.150, det_fps=15.0,
     _sim_t[0] = 1000.0  # ให้ timestamp > 0 เสมอ
     arm = SimArm()
     tracker = gaa._SimpleIoUTracker()
-    kal = gaa._TargetKalman(q=gaa.LOCK_BEARING_KALMAN_Q, r=gaa.LOCK_BEARING_KALMAN_R)
+    kal = gaa._TargetKalman(*gaa.lock_bearing_kalman_qr(PPD_X))
     pose_hist = gaa._ArmPoseHistory()
     ds = gaa._ArmDriveState()
     ds.continuous_target_time_prev = _sim_t[0] - 0.05

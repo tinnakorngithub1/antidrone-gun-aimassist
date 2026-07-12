@@ -84,9 +84,16 @@ def get_crosshair(data: Dict[str, Any]) -> Tuple[float, float]:
         x = ch.get("x", 0)
         y = ch.get("y", 0)
         return float(x), float(y)
-    ow = data.get("output_width", 1920)
-    oh = data.get("output_height", 1080)
-    return ow / 2.0, oh / 2.0
+    # ไม่มี crosshair ในไฟล์ → ใช้กลางภาพ. ห้าม 'เดา' ขนาดภาพ (เดิม default 1920×1080 ซึ่งไม่ตรง
+    # กับไฟล์ cam4 จริงที่เป็น 3840×2160 อยู่แล้ว → ศูนย์เล็งเพี้ยนครึ่งเฟรมแบบเงียบ ๆ)
+    ow = data.get("output_width")
+    oh = data.get("output_height")
+    if not ow or not oh:
+        raise ValueError(
+            "grid lookup: ไฟล์คาลิเบรตไม่มีทั้ง crosshair และ output_width/height "
+            "— ระบุขนาดภาพที่คาลิเบรตไว้ไม่ได้ ต้องคาลิเบรตใหม่"
+        )
+    return float(ow) / 2.0, float(oh) / 2.0
 
 
 def _cells_2d(data: Dict[str, Any]) -> Tuple[Optional[list], int, int]:

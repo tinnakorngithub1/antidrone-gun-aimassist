@@ -351,24 +351,6 @@ CAMERAS = {
         "name": "cam3",
         "width": 1280,
         "height": 720,
-        "video_filename": "DroneNighttime.mp4",
-        "use_video_file": False,
-        "rtsp_url": "rtsp://admin:Passw0rd@192.168.144.201:554/Streaming/channels/201",
-        "window_name": "FAST HUD DETECTOR - cam3",
-        "display_max_width": None,
-        "display_max_height": None,
-        "horizon_file": "horizon_poly_cam3.npy",
-        "fov_horizontal": 66.0,  # FOV ที่ wide (1x zoom)
-        "fov_vertical": 33.0,
-        # มี zoom - ใส่ parameters
-        "fov_tele_horizontal": 2.4,  # FOV ที่ tele (zoom max)
-        "fov_tele_vertical": 1.4,
-        "zoom_max": 25.0,  # 25x optical zoom
-    },
-    "cam3": {
-        "name": "cam3",
-        "width": 1280,
-        "height": 720,
         "video_filename": None,
         "use_video_file": False,
         "rtsp_url": "rtsp://admin:Passw0rd@192.168.144.201:554/Streaming/channels/201",
@@ -402,8 +384,14 @@ CAMERAS = {
         "display_max_width": None,
         "display_max_height": None,
         "horizon_file": "horizon_poly_cam4.npy",
-        "fov_horizontal": 60.0,  # องศา
-        "fov_vertical": 36.0,    # องศา
+        # FOV ต้องตรงกับ pixel_per_degree ที่คาลิเบรตจริง: fov = width/|ppd|
+        # (เดิมตั้ง 60/36 ตามสเปคเลนส์ แต่ ppd ที่วัดได้ 87.138/-89.734 บอกว่าจริง ๆ คือ 44/24
+        #  → estimate_distance_m() อ่านระยะสั้นกว่าจริง ~30% → hit_radius_deg พองเกิน → fire gate หลวม)
+        # ค่าที่ใช้จริงตอนรัน derive จาก ppd โดยตรง (ดู _effective_fov_deg) — ค่าที่นี่เป็น fallback
+        "fov_horizontal": 44.1,  # องศา = 3840 / 87.138
+        "fov_vertical": 24.1,    # องศา = 2160 / 89.734
+        # latency กล้อง (sensor→network→decode) สำหรับ ego-comp — ต้องวัดต่อกล้อง (ดู checklist)
+        "ego_comp_latency_sec": 0.06,
         # ไม่มี zoom - ไม่ต้องใส่ zoom parameters
     },
     "cam5": {
