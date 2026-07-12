@@ -34,17 +34,18 @@ CAM4_ARM_SWAP_PAN_TILT = False
 # ⚠️ ต้อง False ในการใช้งานจริง — เปิดเฉพาะตอนทดสอบ
 # ============================================================================
 LOCK_SIM_TARGET_ENABLED = False       # default โหมดจริง (ไม่มีโดรนจำลอง) — กดปุ่ม I ในแอปเพื่อเปิด/ปิดตอน runtime
-LOCK_SIM_TARGET_PATTERN = "realistic" # realistic | sine | hover | figure8 | manual (i/j/k/l)
+LOCK_SIM_TARGET_PATTERN = "sine"      # sine=ลื่นต่อเนื่อง(ทดสอบง่าย) | realistic=หลบจริง | hover | figure8 | manual
                                       # realistic = บินอิสระ waypoint (เร่ง/หยุด/หักหลบ/โฉบ) เหมือนจริง
-LOCK_SIM_TARGET_OMEGA_DEG_S = 8.0     # peak angular rate สำหรับ sine/figure8 (deg/s)
+LOCK_SIM_TARGET_OMEGA_DEG_S = 3.0     # peak angular rate (deg/s) — 3=บินลื่นปกติ ไม่วกวน
 LOCK_SIM_TARGET_AMP_DEG = 15.0        # แอมพลิจูดการกวาด pan (deg)
 LOCK_SIM_TARGET_TILT_AMP_DEG = 5.0    # แอมพลิจูด tilt (deg)
 LOCK_SIM_TARGET_BOX_DEG = 0.6         # ใช้เมื่อไม่กำหนดระยะ (ปกติคำนวณจากระยะ)
 # realistic flight: ระยะ + ความเร็วโดรนจริง → ขนาดเชิงมุม/ความเร็วเชิงมุมคำนวณเอง
-LOCK_SIM_TARGET_RANGE_M = 200.0       # ระยะโดรน (m) — 200m สมจริง (มุมกวาดช้า ~5°/s ลื่นต่อเนื่อง)
+LOCK_SIM_TARGET_RANGE_M = 50.0        # ระยะโดรน (m) — 50m+ = ระยะเล็งจริง (ใกล้กว่านี้เป้าผ่านหน้าเร็วเกินเล็งทัน)
+LOCK_SIM_TARGET_MAX_ANG_SPEED_DEG_S = 25.0  # cap อัตราเชิงมุมสูงสุด (deg/s) กันกระชากเกินจริงตอนระยะใกล้
 LOCK_SIM_TARGET_SIZE_M = 0.30         # ขนาดจริงโดรน (m)
-LOCK_SIM_TARGET_MAX_SPEED_MS = 18.0   # ความเร็วบินสูงสุด (m/s)
-LOCK_SIM_TARGET_MAX_ACCEL_MS2 = 12.0  # อัตราเร่ง (m/s²)
+LOCK_SIM_TARGET_MAX_SPEED_MS = 8.0    # ความเร็วบินสูงสุด (m/s) — 8=บินปกติ; 18=โดรนแข่ง (กระชากตอนระยะใกล้)
+LOCK_SIM_TARGET_MAX_ACCEL_MS2 = 5.0   # อัตราเร่ง (m/s²) — ต่ำ=บินลื่น; สูง=หลบกระชาก
 LOCK_SIM_TARGET_MISS_RATE = 0.15      # อัตรา YOLO miss จำลอง (0–1)
 LOCK_SIM_TARGET_CLASS_ID = 0          # class id ของ detection ที่ฉีด (ให้ตรง active class)
 LOCK_SIM_TARGET_INJECT_DETECTION = True   # True=ฉีด detection ตรง ๆ (ไม่พึ่ง YOLO ตรวจสไปรต์)
@@ -301,7 +302,7 @@ CAMERA_STARTUP_WAIT_2K_SEC = 15.0
 CAMERA_STARTUP_WAIT_4K_SEC = 30.0   # cam4 3840×2160
 
 # กล้องที่ใช้งานปัจจุบัน (เปลี่ยนที่นี่เพื่อสลับกล้อง)
-ACTIVE_CAMERA = "cam4"  # เลือก: "cam1", "cam2", "cam3", "cam4", "cam5", "cam6"
+ACTIVE_CAMERA = "cam4"  # เลือก: "cam1", "cam2", "cam3_thermal", "cam3_rgb", "cam4", "cam5", "cam6"
 
 # Camera configurations dictionary - แบ่ง parameter ตามชื่อกล้อง
 CAMERAS = {
@@ -347,8 +348,11 @@ CAMERAS = {
         "fov_tele_diagonal": 2.8,    # FOV ที่ tele (zoom max)
         "zoom_max": 25.0,  # 25x optical zoom (ประมาณจาก 55/2.4 ≈ 22.9x)
     },
-    "cam3": {
-        "name": "cam3",
+    # cam3_thermal = เลนส์ THERMAL ของกล้อง Hikvision DS-2TD2628T-7/QA ที่ 192.168.144.201
+    #        (กล้อง bi-spectrum ตัวเดียว มี 2 เลนส์: thermal=channels/201, RGB=channels/101)
+    #        เลนส์ RGB ของตัวเดียวกันนี้อยู่ที่ "cam3_rgb" ด้านล่าง
+    "cam3_thermal": {
+        "name": "cam3_thermal",
         "width": 1280,
         "height": 720,
         "video_filename": None,
@@ -358,16 +362,48 @@ CAMERAS = {
         "udp_port": 554,
         "use_udp_direct": True,
         "stream_format": "h265",
-        "window_name": "FAST HUD DETECTOR - cam3",
+        "window_name": "FAST HUD DETECTOR - cam3_thermal",
         "display_max_width": None,
         "display_max_height": None,
-        "horizon_file": "horizon_poly_cam3.npy",
-        "fov_horizontal": 66.0,  # FOV ที่ wide (1x zoom)
-        "fov_vertical": 33.0,
-        # มี zoom - ใส่ parameters
-        "fov_tele_horizontal": 2.4,  # FOV ที่ tele (zoom max)
+        "horizon_file": "horizon_poly_cam3_thermal.npy",
+        # FOV วัดจริงจาก grid calibrator: cam3_thermal_pixel_per_degree.json (ppd 52.556/-43.134)
+        #   fov = width/|ppd| → 1280/52.556 = 24.4 ,  720/43.134 = 16.7
+        #   (เดิมตั้ง 66/33 ผิด — ไม่ตรง ppd ที่วัด ทำให้ px_per_deg/estimate ระยะเพี้ยน)
+        "fov_horizontal": 24.4,
+        "fov_vertical": 16.7,
+        # หมายเหตุ: DS-2TD2628T เป็นเลนส์ thermal ฟิกซ์ ไม่มี optical zoom —
+        # ค่า fov_tele/zoom_max ด้านล่างเป็นของเก่าที่ก็อปมาจาก template PTZ อย่าเชื่อ
+        "fov_tele_horizontal": 2.4,
         "fov_tele_vertical": 1.4,
-        "zoom_max": 25.0,  # 25x optical zoom
+        "zoom_max": 25.0,
+    },
+    # cam3_rgb = เลนส์ RGB/optical ของกล้อง DS-2TD2628T-7/QA ตัวเดียวกับ cam3 (192.168.144.201)
+    #   channels/101 = 2688x1520 H.265 @ 25fps (วัด fps จริง 25.1)
+    #   ผู้สมัครมาแทน cam4: fps 25 vs 10 ดีกว่า, แต่ res 4MP < cam4 4K(8.3MP)
+    "cam3_rgb": {
+        "name": "cam3_rgb",
+        "width": 2688,
+        "height": 1520,
+        "video_filename": None,
+        "use_video_file": False,
+        "rtsp_url": "rtsp://admin:Passw0rd@192.168.144.201:554/Streaming/channels/101",
+        "udp_ip": "192.168.144.201",
+        "udp_port": 554,
+        "use_udp_direct": True,
+        "stream_format": "h265",
+        "window_name": "FAST HUD DETECTOR - cam3_rgb",
+        "display_max_width": None,
+        "display_max_height": None,
+        "horizon_file": "horizon_poly_cam3_rgb.npy",
+        # ⚠️ PROVISIONAL — ยังไม่ได้ calibrate จริง!
+        #   ค่านี้เดาจากการเทียบ feature กับภาพ thermal (±30%) ใช้เป็น fallback เท่านั้น
+        #   ต้องรัน: python3 cam8_arm_grid_calibrator_4.py --cam-bottom cam3_rgb
+        #   เพื่อให้ได้ cam3_rgb_pixel_per_degree.json แล้วอัปเดต fov = width/|ppd| ที่นี่
+        #   (ระบบเล็งจะใช้ ppd ที่ calibrate ทันทีที่มีไฟล์ — ค่านี้แค่กันพัง)
+        "fov_horizontal": 34.0,   # PROVISIONAL (≈ 2688/79)
+        "fov_vertical": 19.2,     # PROVISIONAL (= 34.0 * 1520/2688)
+        # latency ยังไม่วัด — กด W (wizard) บนเครื่องจริงเพื่อวัด แล้วเติม
+        # "ego_comp_latency_sec"/"cam_latency_sec" เหมือน cam4 (25fps น่าจะหน่วงน้อยกว่า cam4 10fps)
     },
     "cam4": {
         "name": "cam4",
@@ -2200,8 +2236,14 @@ CAMERA_GEO = {
         "site_lng": 0.0,
         "heading_deg": 0.0,
     },
-    "cam3": {
+    "cam3_thermal": {
         "camera_id": "CAM003",
+        "site_lat": 0.0,
+        "site_lng": 0.0,
+        "heading_deg": 0.0,
+    },
+    "cam3_rgb": {
+        "camera_id": "CAM003R",
         "site_lat": 0.0,
         "site_lng": 0.0,
         "heading_deg": 0.0,

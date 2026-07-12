@@ -74,7 +74,7 @@ except Exception:
     YOLO_AVAILABLE = False
 
 
-CAMERA_NAME = "cam3"
+CAMERA_NAME = "cam3_thermal"
 WINDOW_NAME = "Thermal Template Lock Aim Assist"
 DISPLAY_FULLSCREEN = True
 

@@ -123,8 +123,10 @@ CALIB_LOCAL_CAMERAS: Dict[str, Dict[str, Any]] = {
         "fov_tele_diagonal": 2.8,
         "zoom_max": 25.0,
     },
-    "cam3": {
-        "name": "cam3",
+    # cam3_thermal = เลนส์ THERMAL ของ Hikvision DS-2TD2628T-7/QA @192.168.144.201 (bi-spectrum)
+    #   FOV วัดจริง (cam3_thermal_pixel_per_degree.json): 1280/52.556=24.4, 720/43.134=16.7 (เดิม 66/33 ผิด)
+    "cam3_thermal": {
+        "name": "cam3_thermal",
         "width": 1280,
         "height": 720,
         "video_filename": "66.mp4",
@@ -134,11 +136,27 @@ CALIB_LOCAL_CAMERAS: Dict[str, Dict[str, Any]] = {
         "udp_port": 554,
         "use_udp_direct": True,
         "stream_format": "h265",
-        "fov_horizontal": 66.0,
-        "fov_vertical": 33.0,
+        "fov_horizontal": 24.4,
+        "fov_vertical": 16.7,
         "fov_tele_horizontal": 2.4,
         "fov_tele_vertical": 1.4,
         "zoom_max": 25.0,
+    },
+    # cam3_rgb = เลนส์ RGB ของกล้องตัวเดียวกับ cam3_thermal (channels/101, 2688x1520 h265 25fps)
+    #   FOV = PROVISIONAL — calibrate ตัวนี้ด้วย: --cam-bottom cam3_rgb (→ cam3_rgb_pixel_per_degree.json)
+    "cam3_rgb": {
+        "name": "cam3_rgb",
+        "width": 2688,
+        "height": 1520,
+        "video_filename": None,
+        "use_video_file": False,
+        "rtsp_url": "rtsp://admin:Passw0rd@192.168.144.201:554/Streaming/channels/101",
+        "udp_ip": "192.168.144.201",
+        "udp_port": 554,
+        "use_udp_direct": True,
+        "stream_format": "h265",
+        "fov_horizontal": 34.0,   # PROVISIONAL
+        "fov_vertical": 19.2,     # PROVISIONAL
     },
     "cam4": {
         "name": "cam4",

@@ -217,9 +217,10 @@ CAMERA_GEO = {
     # *** ตัวอย่างค่า — แก้ให้ตรงกับพิกัดจริงก่อนใช้งาน ***
     "cam1": {"camera_id": "CAM001", "site_lat": 14.0000, "site_lng": 100.0000, "heading_deg": 0.0},
     "cam2": {"camera_id": "CAM002", "site_lat": 14.0000, "site_lng": 100.0000, "heading_deg": 0.0},
-    # cam3 = กล้อง bottom (BOTTOM_CAMERA_NAME) — ใช้จริงตอน BOTTOM_SOURCE_MODE = "single"
-    #"cam3": {"camera_id": "CAM001", "site_lat": 14.0000, "site_lng": 102.5870, "heading_deg": 100.0},
-    "cam3": {"camera_id": "CAM001", "site_lat": 14.0000, "site_lng": 102.6070, "heading_deg": 100.0},
+    # cam3_thermal = กล้อง bottom (BOTTOM_CAMERA_NAME) — ใช้จริงตอน BOTTOM_SOURCE_MODE = "single"
+    #"cam3_thermal": {"camera_id": "CAM001", "site_lat": 14.0000, "site_lng": 102.5870, "heading_deg": 100.0},
+    "cam3_thermal": {"camera_id": "CAM001", "site_lat": 14.0000, "site_lng": 102.6070, "heading_deg": 100.0},
+    "cam3_rgb": {"camera_id": "CAM001R", "site_lat": 14.0000, "site_lng": 102.6070, "heading_deg": 100.0},
     # cam4 = กล้อง top (TOP_CAMERA_NAME)
     #"cam4": {"camera_id": "CAM004", "site_lat": 14.0000, "site_lng": 102.5871, "heading_deg": 160.0},
     "cam4": {"camera_id": "CAM004", "site_lat": 14.0000, "site_lng": 102.6071, "heading_deg": 160.0},
@@ -264,8 +265,11 @@ LOCAL_CAMERAS = {
         "fov_tele_diagonal": 2.8,
         "zoom_max": 25.0,
     },
-    "cam3": {
-        "name": "cam3",
+    # cam3_thermal = เลนส์ THERMAL ของ Hikvision DS-2TD2628T-7/QA @192.168.144.201 (bi-spectrum)
+    #   FOV วัดจริงจาก cam3_thermal_pixel_per_degree.json → 1280/52.556=24.4, 720/43.134=16.7
+    #   (เดิม 66/33 ผิด); เลนส์ RGB ตัวเดียวกันคือ cam3_rgb ด้านล่าง (thermal ฟิกซ์ ไม่มี zoom จริง)
+    "cam3_thermal": {
+        "name": "cam3_thermal",
         "width": 1280,
         "height": 720,
         "video_filename": "66.mp4",
@@ -275,11 +279,28 @@ LOCAL_CAMERAS = {
         "udp_port": 554,
         "use_udp_direct": True,
         "stream_format": "h265",
-        "fov_horizontal": 66.0,
-        "fov_vertical": 33.0,
+        "fov_horizontal": 24.4,
+        "fov_vertical": 16.7,
         "fov_tele_horizontal": 2.4,
         "fov_tele_vertical": 1.4,
         "zoom_max": 25.0,
+    },
+    # cam3_rgb = เลนส์ RGB/optical ของกล้องตัวเดียวกับ cam3_thermal (channels/101, 2688x1520 h265 25fps)
+    #   ผู้สมัครแทน cam4. FOV = PROVISIONAL (±30% เดาจากเทียบ thermal) — ต้อง calibrate จริง:
+    #   python3 cam8_arm_grid_calibrator_4.py --cam-bottom cam3_rgb → cam3_rgb_pixel_per_degree.json
+    "cam3_rgb": {
+        "name": "cam3_rgb",
+        "width": 2688,
+        "height": 1520,
+        "video_filename": None,
+        "use_video_file": False,
+        "rtsp_url": "rtsp://admin:Passw0rd@192.168.144.201:554/Streaming/channels/101",
+        "udp_ip": "192.168.144.201",
+        "udp_port": 554,
+        "use_udp_direct": True,
+        "stream_format": "h265",
+        "fov_horizontal": 34.0,   # PROVISIONAL
+        "fov_vertical": 19.2,     # PROVISIONAL
     },
     "cam4": {
         "name": "cam4",
@@ -387,8 +408,8 @@ TOP_HORIZON_FILE = "horizon_poly_cam8_top.npy"
 TOP_IGNORE_MOTION_FILE = "motion_ignore_mask_cam8_top.npy"
 
 BOTTOM_SOURCE_MODE = "single"  # single | stitched
-BOTTOM_CAMERA_NAME = "cam4"  # เปลี่ยนเป็น cam3 ถ้าอยากทดสอบ vdo  ## เปลี่ยนเป็น cam9 ถ้าใช้กล้อง 180 จริง
-BOTTOM_LEFT_CAMERA = "cam3"
+BOTTOM_CAMERA_NAME = "cam4"  # เปลี่ยนเป็น cam3_thermal/cam3_rgb ถ้าอยากทดสอบ  ## เปลี่ยนเป็น cam9 ถ้าใช้กล้อง 180 จริง
+BOTTOM_LEFT_CAMERA = "cam3_thermal"
 BOTTOM_RIGHT_CAMERA = "cam7"
 BOTTOM_CLONE_RIGHT_FROM_LEFT = False
 BOTTOM_STITCH_PRESET = "bottom_stitch.jetson"
