@@ -33,6 +33,7 @@ _camera_name = "cam4"
 _cfg_mod = None
 _gaa_globals: Optional[Dict[str, Any]] = None
 _shooter = None
+_apply_hook = None          # callback ให้ main() ซิงก์ค่าที่ถูกก๊อปลง local
 _editing_text = False      # โหมดพิมพ์ (ฟิลด์ str) — คีย์ทั้งหมดถูกดูดเข้า buffer
 _text_buf = ""
 _status_msg = ""
@@ -60,12 +61,16 @@ def is_active() -> bool:
     return _active
 
 
-def enter(window_name: str, camera_name: str, cfg_mod, gaa_globals: Dict[str, Any], shooter) -> None:
+def enter(window_name: str, camera_name: str, cfg_mod, gaa_globals: Dict[str, Any], shooter,
+          apply_hook=None) -> None:
     """gaa_globals = globals() ของ 22 (เพื่ออ่าน/เขียนค่า fire gate ที่อยู่ที่นั่น)
-    shooter = ShooterConfig instance (ballistics + boresight)"""
-    global _active, _data, _dirty, _camera_name, _cfg_mod, _gaa_globals, _shooter
+    shooter    = ShooterConfig instance (ballistics + boresight)
+    apply_hook = fn(key, value) ที่ main() ให้มา — เรียกทุกครั้งที่แก้ค่า live เพื่อซิงก์
+                 ตัวแปร local ที่ก๊อปค่าไปตั้งแต่ startup (ไม่งั้นแก้แล้วโปรแกรมไม่สนใจ)"""
+    global _active, _data, _dirty, _camera_name, _cfg_mod, _gaa_globals, _shooter, _apply_hook
     global _section_idx, _field_idx, _status_msg, _editing_text
     _active = True
+    _apply_hook = apply_hook
     _camera_name = camera_name
     _cfg_mod = cfg_mod
     _gaa_globals = gaa_globals
@@ -141,6 +146,14 @@ def _set_value(f: rc.Field, v: Any) -> None:
         _gaa_globals[f.key] = v
     elif _cfg_mod is not None:
         setattr(_cfg_mod, f.key, v)
+    # บางค่าถูกก๊อปลง 'ตัวแปร local' ของ main() ตั้งแต่ startup (เช่น YOLO_CONF_DETECT →
+    # runtime_conf_detect, ego_comp_latency_sec → ego_comp_latency) หรือถูกใช้คำนวณค่าอื่นต่อ
+    # (LOCK_MEAS_SIGMA_PX → Kalman R) → แก้ module global อย่างเดียวไม่พอ ต้องให้ main() ซิงก์ตาม
+    if _apply_hook is not None:
+        try:
+            _apply_hook(f.key, v)
+        except Exception as e:
+            print(f"[SETTINGS] apply hook failed for {f.key}: {e}")
     _status_msg = f"{f.label} = {_fmt(f, v)}  (applied now)"
     _status_color = C_OK
 

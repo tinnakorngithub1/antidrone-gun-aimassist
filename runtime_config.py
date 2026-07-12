@@ -55,7 +55,7 @@ class Field:
         self.help = help
 
 
-SECTIONS: List[str] = ["Camera", "Arm", "Detection", "Firing"]
+SECTIONS: List[str] = ["Camera", "Arm", "Detection", "Tracking", "Firing"]
 
 SPEC: Dict[str, List[Field]] = {
     "Camera": [
@@ -104,6 +104,30 @@ SPEC: Dict[str, List[Field]] = {
               lo=2.0, hi=30.0, step=0.5, unit="°",
               help="Fixed angular span, so a drone occupies the same pixels on any camera"),
     ],
+    "Tracking": [
+        # ทั้งหมดถูกอ่านตอนเรียกใช้จริง (module global ใน _tick_lock) → แก้แล้วมีผลทันที
+        Field("LOCK_DEADZONE_DEG", "Deadzone", "float", "global", True,
+              lo=0.05, hi=3.0, step=0.05, unit="deg",
+              help="Stop the arm when the angular error is below this. Small = tight but can hunt"),
+        Field("LOCK_TRACK_STEP_SCALE", "Track step scale", "float", "global", True,
+              lo=0.2, hi=2.0, step=0.05,
+              help="Arm step gain while tracking. High = snappy but may overshoot"),
+        Field("LOCK_LEAD_MAX_DEG", "Tracking lead cap", "float", "global", True,
+              lo=0.0, hi=20.0, step=0.5, unit="deg",
+              help="Cap on the predictive lead, guards against velocity noise slinging the arm"),
+        Field("LOCK_LEAD_EXTRA_SEC", "Actuation lead", "float", "global", True,
+              lo=0.0, hi=0.3, step=0.01, unit="s"),
+        Field("LOCK_KALMAN_COAST_MAX_SEC", "Max coast", "float", "global", True,
+              lo=0.1, hi=3.0, step=0.1, unit="s",
+              help="How long to keep predicting after the target is lost before giving up"),
+        Field("LOCK_SLEW_GUARD_NEAR_DEG_S", "Slew cap (near)", "float", "global", True,
+              lo=5.0, hi=300.0, step=5.0, unit="deg/s"),
+        Field("LOCK_SLEW_GUARD_FAR_DEG_S", "Slew cap (far)", "float", "global", True,
+              lo=5.0, hi=400.0, step=10.0, unit="deg/s"),
+        Field("LOCK_PIPELINE_LATENCY_FALLBACK", "Pipeline latency fallback", "float", "global", True,
+              lo=0.0, hi=0.5, step=0.01, unit="s",
+              help="Only used until the runtime measures the real value"),
+    ],
     "Firing": [
         Field("muzzle_velocity_ms", "Muzzle velocity", "float", "shooter", True,
               lo=100, hi=1500, step=25, unit="m/s"),
@@ -127,6 +151,16 @@ SPEC: Dict[str, List[Field]] = {
         Field("LOCK_MEAS_SIGMA_PX", "Sigma of bbox jitter", "float", "global", True,
               lo=0.5, hi=60.0, step=0.5, unit="px",
               help="Feeds Kalman R = (sigma/ppd)^2. Let the wizard measure it"),
+        Field("LOCK_FIRE_MAX_RESID_DEG_S", "Max juke residual", "float", "global", True,
+              lo=0.5, hi=15.0, step=0.5, unit="deg/s",
+              help="Target jinking harder than this is unpredictable - hold fire"),
+        Field("LOCK_FIRE_CONFIDENT_FRAMES", "Confident frames", "int", "global", True,
+              lo=1, hi=20, step=1,
+              help="Consecutive confident frames required before the gate opens"),
+        Field("LOCK_FIRE_READY_FRAMES", "Ready frames", "int", "global", True,
+              lo=1, hi=20, step=1),
+        Field("CAM4_ARM_FIRE_COOLDOWN_SEC", "Fire cooldown", "float", "global", True,
+              lo=0.0, hi=5.0, step=0.1, unit="s"),
     ],
 }
 

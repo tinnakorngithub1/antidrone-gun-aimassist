@@ -700,15 +700,20 @@ LOCK_MEAS_SIGMA_PX = 5.0           # 1σ ของ bbox-center jitter (พิก
 PPD_X_FALLBACK = 87.138            # ppd cam4 — ใช้เมื่อยังไม่ได้โหลดคาลิเบรต (คงพฤติกรรมเดิม)
 
 
-def lock_bearing_kalman_qr(ppd_x, sigma_px: float = LOCK_MEAS_SIGMA_PX):
+def lock_bearing_kalman_qr(ppd_x, sigma_px: Optional[float] = None):
     """
     คืน (q, r) หน่วย deg² สำหรับ lock_kalman ตาม ppd ของกล้องที่ใช้จริง.
     Q คงที่ (ฟิสิกส์ของเป้า); R = (σ_px / ppd)² (jitter ของกล้องแปลงเป็นองศา).
+
+    sigma_px=None → อ่าน LOCK_MEAS_SIGMA_PX 'ตอนเรียก' ไม่ใช่ใส่เป็น default argument:
+    Python ประเมิน default argument ครั้งเดียวตอน def → ค่าจะถูกแช่แข็งตั้งแต่ import
+    แก้ผ่านหน้า Settings ทีหลังจะไม่มีผลเลย (บั๊กที่เจอตอนตรวจว่า 'ค่าที่โชว์ = ค่าที่ใช้จริงไหม')
     """
     ppd = abs(float(ppd_x)) if ppd_x else 0.0
     if ppd < 1e-6:
         ppd = PPD_X_FALLBACK
-    return LOCK_BEARING_Q_DEG2, (float(sigma_px) / ppd) ** 2
+    s = LOCK_MEAS_SIGMA_PX if sigma_px is None else float(sigma_px)
+    return LOCK_BEARING_Q_DEG2, (s / ppd) ** 2
 LOCK_TRACK_DEBUG = True            # print telemetry _tick_lock (throttled) เพื่อวินิจฉัยอาการจริง (ปิดได้)
 _lock_dbg_last_t = [0.0]          # throttle timer สำหรับ debug print
 _lock_dbg2_last_t = [0.0]         # throttle timer สำหรับ guard-state debug
@@ -4941,12 +4946,28 @@ def main():
             _reload_calibration("WIZARD")
 
     # ---------------- Settings (S) ----------------
+    def _settings_apply(key, value):
+        """ซิงก์ค่าที่หน้า Settings แก้ เข้าตัวแปรที่ลูปหลัก 'ใช้จริง'
+
+        จำเป็นเพราะบางค่าถูกก๊อปลง local ตอน startup แล้วไม่เคยอ่าน module global อีกเลย
+        → ถ้าไม่ซิงก์ หน้า Settings จะโชว์ค่าใหม่ แต่โปรแกรมยังใช้ค่าเก่า = โกหกผู้ใช้
+        """
+        nonlocal runtime_conf_detect, ego_comp_latency
+        if key == "YOLO_CONF_DETECT":
+            runtime_conf_detect = float(value)
+        elif key == "ego_comp_latency_sec":
+            ego_comp_latency = float(value)
+        elif key == "LOCK_MEAS_SIGMA_PX" and px_per_deg_x:
+            _q, _r = lock_bearing_kalman_qr(px_per_deg_x)   # R = (σ/ppd)² ต้องคำนวณใหม่
+            lock_kalman.set_noise(q=_q, r=_r)
+
     def _enter_settings():
         nonlocal app_mode
         if settings_screen is None:
             app_mode = "settings"     # ถอยไปหน้า ballistics แบบเดิม
             return
-        settings_screen.enter(WINDOW_NAME, camera_name, _config_mod, globals(), config)
+        settings_screen.enter(WINDOW_NAME, camera_name, _config_mod, globals(), config,
+                              apply_hook=_settings_apply)
         app_mode = "settings2"
 
     def _exit_settings():
